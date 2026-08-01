@@ -1,0 +1,124 @@
+{
+  "artifact": {
+    "bytes": 42810,
+    "file": "dist/chromoxel-unreal-0.2.0-UE5.8-source.zip",
+    "members": [
+      {
+        "bytes": 739,
+        "name": "Chromoxel/VoxelMapMVP.uplugin",
+        "sha256": "E56EB4B278A5C4D8225E0A3D4308E49E2CD941A88ADBBBF9BFC8A5396AE1102D"
+      },
+      {
+        "bytes": 3947,
+        "name": "Chromoxel/README.md",
+        "sha256": "BAD4F71EE3B25216689E5742BF495F707CDB08DB7F96E6EB9A74EADA8EDFFAB6"
+      },
+      {
+        "bytes": 11558,
+        "name": "Chromoxel/LICENSE",
+        "sha256": "1EB85FC97224598DAD1852B5D6483BBCF0AA8608790DCC657A5A2A761AE9C8C6"
+      },
+      {
+        "bytes": 726,
+        "name": "Chromoxel/CHANGELOG.md",
+        "sha256": "0E47410A9C5BDEAAFF090A04736FC9D029183EFD45150CB4F44EA101BE167864"
+      },
+      {
+        "bytes": 373,
+        "name": "Chromoxel/THIRD_PARTY_NOTICES.md",
+        "sha256": "1980D7712234417741F7505669340F762F94DCC4763791CEE1DA42C8FD706323"
+      },
+      {
+        "bytes": 886,
+        "name": "Chromoxel/VALIDATION.md",
+        "sha256": "CFFB26C8727A4FDA7A4D6C2972E8E4706F9C99CBECB087A151126D8BAD0DCF3B"
+      },
+      {
+        "bytes": 88,
+        "name": "Chromoxel/Config/FilterPlugin.ini",
+        "sha256": "857052039964E25D3DFC321F720BC0873DA320C7F3897CDFC0CDEA7B32D044FB"
+      },
+      {
+        "bytes": 86,
+        "name": "Chromoxel/Source/VoxelMapMVP/Private/VoxelMapMVPModule.cpp",
+        "sha256": "0179F52B60167BE8E621FF84DCE26184D9E95777E7DF709D4F0475A1EB07A84A"
+      },
+      {
+        "bytes": 3433,
+        "name": "Chromoxel/Source/VoxelMapMVP/Private/VoxelMapPreviewActor.cpp",
+        "sha256": "04E273CC2D7CAC56538AF9597C7DE78CB316EF3623FB38B5D2E3173E00E4C917"
+      },
+      {
+        "bytes": 10845,
+        "name": "Chromoxel/Source/VoxelMapMVP/Public/VoxelMapDataAsset.h",
+        "sha256": "677937D25E879CE184A8D876828762BB46CA508D035016A29FD4E36C2CAFF7F0"
+      },
+      {
+        "bytes": 720,
+        "name": "Chromoxel/Source/VoxelMapMVP/Public/VoxelMapPreviewActor.h",
+        "sha256": "B744775F7EEFFEE562DA105625A82536A5BB2C81DA3E0CE1A993417D0A36AE65"
+      },
+      {
+        "bytes": 377,
+        "name": "Chromoxel/Source/VoxelMapMVP/VoxelMapMVP.Build.cs",
+        "sha256": "5565F22950F1934A7FCFD6164FF4F6091D91AC69EF77F1E7BCBC13ABA5681C0A"
+      },
+      {
+        "bytes": 2855,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapBakeCommandlet.cpp",
+        "sha256": "679642A53886B6AE55A848FD4EC1019BB92AD1CDD4C90FAEC0588EA3337CB52B"
+      },
+      {
+        "bytes": 54297,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapBaker.cpp",
+        "sha256": "7455F13D4EE3E6842591C2079F9C279C42073523B6D9F8C96E8C9305C52B6B71"
+      },
+      {
+        "bytes": 2790,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapBaker.h",
+        "sha256": "C281C3A4BA030AB5F592874E83C74D04AC1F2EBDDBCBF343D75A120635ACE325"
+      },
+      {
+        "bytes": 56545,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapColorCapture.cpp",
+        "sha256": "BF1009653E98554C5C26D01E7F29CA421D62B6573E62EE8462E7EAD905E8BC84"
+      },
+      {
+        "bytes": 1773,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapColorCapture.h",
+        "sha256": "778C17512FF5BBC367B1D2F5C5626338051021F41D60CC462E7314DCDE0CECA5"
+      },
+      {
+        "bytes": 4231,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapMVPEditorModule.cpp",
+        "sha256": "BBAB03AE5EB2294A2E4519BC86D8AEDE8F943CAD284799DE1E31BEB8223868EE"
+      },
+      {
+        "bytes": 4884,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapPreviewMaterial.cpp",
+        "sha256": "1CFA86015C5C830AE28910F53A631800F3E4D1DCEAF3314B3E614D743BB7E7E6"
+      },
+      {
+        "bytes": 343,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Private/VoxelMapPreviewMaterial.h",
+        "sha256": "0BBCB111B405C1CEAA674BD88E4598E34DA39F6D6EBE5D6E890BA1017448D910"
+      },
+      {
+        "bytes": 326,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/Public/VoxelMapBakeCommandlet.h",
+        "sha256": "5C6AE150496E3A34ECA73E5CB916A074341AA211F2AB85F96F9C3D73D53993E0"
+      },
+      {
+        "bytes": 816,
+        "name": "Chromoxel/Source/VoxelMapMVPEditor/VoxelMapMVPEditor.Build.cs",
+        "sha256": "FB22FDC212BEB15341FE3F4407D8C7D33CE86A5156DC3EC2455C31102E1843B7"
+      }
+    ],
+    "sha256": "337925F917FEA19A2BE1A59B41FAA35638F4A0BA57B6FADC8ABFA197F50A4AEE"
+  },
+  "engine": "Unreal Engine 5.8",
+  "schema": "chromoxel-unreal-release/1",
+  "status": "PASS",
+  "version": "0.2.0",
+  "visibility": "public"
+}

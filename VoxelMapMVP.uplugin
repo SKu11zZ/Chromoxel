@@ -1,0 +1,27 @@
+{
+  "FileVersion": 3,
+  "Version": 2,
+  "VersionName": "0.2.0",
+  "FriendlyName": "Chromoxel",
+  "Description": "Texture-aware editor voxelization and Deferred BaseColor bake with persistent HISM preview.",
+  "Category": "Editor",
+  "CreatedBy": "SKu11zZ",
+  "CreatedByURL": "https://github.com/SKu11zZ",
+  "DocsURL": "https://github.com/SKu11zZ/Chromoxel/tree/unreal",
+  "SupportURL": "https://github.com/SKu11zZ/Chromoxel/issues",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "VoxelMapMVP",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "VoxelMapMVPEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
