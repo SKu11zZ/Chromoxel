@@ -1,6 +1,6 @@
 {
   "artifact": {
-    "bytes": 42810,
+    "bytes": 44569,
     "file": "dist/chromoxel-unreal-0.2.0-UE5.8-source.zip",
     "members": [
       {
@@ -9,9 +9,9 @@
         "sha256": "E56EB4B278A5C4D8225E0A3D4308E49E2CD941A88ADBBBF9BFC8A5396AE1102D"
       },
       {
-        "bytes": 3947,
+        "bytes": 7922,
         "name": "Chromoxel/README.md",
-        "sha256": "BAD4F71EE3B25216689E5742BF495F707CDB08DB7F96E6EB9A74EADA8EDFFAB6"
+        "sha256": "5B0F14BE494BDFDF2CAD907C1728CB955788901452860BB979AAF77311CFE3A6"
       },
       {
         "bytes": 11558,
@@ -114,7 +114,7 @@
         "sha256": "FB22FDC212BEB15341FE3F4407D8C7D33CE86A5156DC3EC2455C31102E1843B7"
       }
     ],
-    "sha256": "337925F917FEA19A2BE1A59B41FAA35638F4A0BA57B6FADC8ABFA197F50A4AEE"
+    "sha256": "35801AF49D3B346E582F4B0EC383308CEFD53A0F76300971B109CA5CD6FCAEBD"
   },
   "engine": "Unreal Engine 5.8",
   "schema": "chromoxel-unreal-release/1",
