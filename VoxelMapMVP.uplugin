@@ -1,9 +1,9 @@
 {
   "FileVersion": 3,
-  "Version": 2,
-  "VersionName": "0.2.0",
+  "Version": 3,
+  "VersionName": "0.3.0",
   "FriendlyName": "Chromoxel",
-  "Description": "Texture-aware editor voxelization and Deferred BaseColor bake with persistent HISM preview.",
+  "Description": "Scoped texture-aware voxel baking with incremental HISM preview chunks for Unreal Engine 5.8.",
   "Category": "Editor",
   "CreatedBy": "SKu11zZ",
   "CreatedByURL": "https://github.com/SKu11zZ",

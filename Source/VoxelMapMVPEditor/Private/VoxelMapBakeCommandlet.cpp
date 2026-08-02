@@ -10,6 +10,32 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogVoxelMapBakeCommandlet, Log, All);
 
+namespace
+{
+bool ParseCsvVector(const FString& Text, FVector& OutVector)
+{
+    TArray<FString> Values;
+    Text.ParseIntoArray(Values, TEXT(","), true);
+    if (Values.Num() != 3)
+    {
+        return false;
+    }
+    for (FString& Value : Values)
+    {
+        Value.TrimStartAndEndInline();
+        if (!Value.IsNumeric())
+        {
+            return false;
+        }
+    }
+    OutVector = FVector(
+        FCString::Atod(*Values[0]),
+        FCString::Atod(*Values[1]),
+        FCString::Atod(*Values[2]));
+    return !OutVector.ContainsNaN();
+}
+} // namespace
+
 UVoxelMapBakeCommandlet::UVoxelMapBakeCommandlet()
 {
     IsClient = true;
@@ -26,11 +52,32 @@ int32 UVoxelMapBakeCommandlet::Main(const FString& Params)
     FString DataAsset = TEXT("/Game/VoxelMapMVP/Data/VM_Lvl_FirstPerson");
     FString Report = FPaths::Combine(TEXT("VoxelMapMVP"), TEXT("BakeReport.json"));
     float VoxelSize = 25.0f;
+    FString Preset = TEXT("Standard");
+    FString ScopeName = TEXT("World");
+    FString BoundsMinText;
+    FString BoundsMaxText;
+    FString ActorPathsText;
 
     FParse::Value(*Params, TEXT("Map="), SourceMap);
     FParse::Value(*Params, TEXT("OutputMap="), OutputMap);
     FParse::Value(*Params, TEXT("DataAsset="), DataAsset);
     FParse::Value(*Params, TEXT("Report="), Report);
+    FParse::Value(*Params, TEXT("Preset="), Preset);
+    FParse::Value(*Params, TEXT("Scope="), ScopeName);
+    // Bounds and actor-list values intentionally contain separators. Passing
+    // false prevents FParse from truncating an unquoted value at the first
+    // comma or closing parenthesis.
+    FParse::Value(*Params, TEXT("BoundsMin="), BoundsMinText, false);
+    FParse::Value(*Params, TEXT("BoundsMax="), BoundsMaxText, false);
+    FParse::Value(*Params, TEXT("ActorPaths="), ActorPathsText, false);
+    if (Preset.Equals(TEXT("Fine"), ESearchCase::IgnoreCase))
+    {
+        VoxelSize = 10.0f;
+    }
+    else if (Preset.Equals(TEXT("Coarse"), ESearchCase::IgnoreCase))
+    {
+        VoxelSize = 50.0f;
+    }
     FParse::Value(*Params, TEXT("VoxelSize="), VoxelSize);
 
     FString SourceFilename = SourceMap;
@@ -59,21 +106,61 @@ int32 UVoxelMapBakeCommandlet::Main(const FString& Params)
     Options.DataAssetPath = DataAsset;
     Options.ReportPath = Report;
     Options.VoxelSize = VoxelSize;
+    Options.bShowProgressDialog = false;
+    if (ScopeName.Equals(TEXT("Selected"), ESearchCase::IgnoreCase) ||
+        ScopeName.Equals(TEXT("SelectedActors"), ESearchCase::IgnoreCase))
+    {
+        Options.Scope = EVoxelMapBakeScope::SelectedActors;
+        TArray<FString> ActorPaths;
+        ActorPathsText.ParseIntoArray(ActorPaths, TEXT(";"), true);
+        for (const FString& ActorPath : ActorPaths)
+        {
+            Options.SelectedActorPaths.Add(ActorPath);
+        }
+    }
+    else if (ScopeName.Equals(TEXT("Bounds"), ESearchCase::IgnoreCase))
+    {
+        Options.Scope = EVoxelMapBakeScope::Bounds;
+        FVector BoundsMin;
+        FVector BoundsMax;
+        if (!ParseCsvVector(BoundsMinText, BoundsMin) ||
+            !ParseCsvVector(BoundsMaxText, BoundsMax))
+        {
+            UE_LOG(
+                LogVoxelMapBakeCommandlet,
+                Error,
+                TEXT("Bounds scope requires -BoundsMin=X,Y,Z and -BoundsMax=X,Y,Z."));
+            return 4;
+        }
+        Options.ScopeBounds = FBox(BoundsMin, BoundsMax);
+    }
 
     FVoxelMapBakeResult Result;
     if (!FVoxelMapBaker::BakeWorldAndSave(World, Options, Result))
     {
         UE_LOG(LogVoxelMapBakeCommandlet, Error, TEXT("VOXELMAP_BAKE_FAILED: %s"), *Result.Error);
-        return 4;
+        return Result.bCancelled ? 5 : 4;
     }
 
     UE_LOG(
         LogVoxelMapBakeCommandlet,
         Display,
-        TEXT("VOXELMAP_COMMANDLET_COMPLETE voxels=%d blocks=%d geometry_hash=%s ")
+        TEXT("VOXELMAP_COMMANDLET_COMPLETE scope=%s voxel_size=%.3f voxels=%d blocks=%d ")
+        TEXT("reused=%d changed=%d removed=%d preview_chunks_reused=%d rebuilt=%d removed=%d ")
+        TEXT("material_slots=%d unique_materials=%d geometry_hash=%s ")
         TEXT("color_status=%s captured=%d fallback=%d coverage=%.6f color_hash=%s config_hash=%s"),
+        *Result.BakeScope,
+        Options.VoxelSize,
         Result.OccupiedVoxelCount,
         Result.BlockCount,
+        Result.ReusedBlockCount,
+        Result.ChangedBlockCount,
+        Result.RemovedBlockCount,
+        Result.ReusedPreviewChunkCount,
+        Result.RebuiltPreviewChunkCount,
+        Result.RemovedPreviewChunkCount,
+        Result.SourceMaterialSlotCount,
+        Result.SourceUniqueMaterialCount,
         *Result.DataHash,
         *Result.ColorCaptureStatus,
         Result.CapturedColorVoxelCount,

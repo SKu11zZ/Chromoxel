@@ -6,6 +6,26 @@
 class UWorld;
 class UVoxelMapDataAsset;
 
+enum class EVoxelMapBakeScope : uint8
+{
+    World,
+    SelectedActors,
+    Bounds
+};
+
+inline const TCHAR* VoxelMapBakeScopeToString(EVoxelMapBakeScope Scope)
+{
+    switch (Scope)
+    {
+    case EVoxelMapBakeScope::SelectedActors:
+        return TEXT("SelectedActors");
+    case EVoxelMapBakeScope::Bounds:
+        return TEXT("Bounds");
+    default:
+        return TEXT("World");
+    }
+}
+
 struct FVoxelMapBakeOptions
 {
     float VoxelSize = 25.0f;
@@ -20,12 +40,20 @@ struct FVoxelMapBakeOptions
     FString OutputMapPath;
     FString DataAssetPath;
     FString ReportPath;
+    EVoxelMapBakeScope Scope = EVoxelMapBakeScope::World;
+    TSet<FString> SelectedActorPaths;
+    FBox ScopeBounds = FBox(ForceInit);
     bool bHideIncludedSourceMeshes = true;
+    bool bEnableIncrementalBlocks = true;
+    bool bShowProgressDialog = true;
+    bool bAllowCancel = true;
+    int32 ProgressUpdateInterval = 2048;
 };
 
 struct FVoxelMapBakeResult
 {
     bool bSuccess = false;
+    bool bCancelled = false;
     FString Error;
     FString DataAssetPath;
     FString OutputMapPath;
@@ -36,6 +64,10 @@ struct FVoxelMapBakeResult
     int32 SourceComponentCount = 0;
     int32 SourceMeshInstanceCount = 0;
     int32 UniqueMeshCount = 0;
+    int32 SourceMaterialSlotCount = 0;
+    int32 SourceUniqueMaterialCount = 0;
+    int32 SourceNullMaterialSlotCount = 0;
+    int32 MultiMaterialComponentCount = 0;
     int64 SourceTriangleInstanceCount = 0;
     int64 CandidateTests = 0;
     int32 FilteredHidden = 0;
@@ -44,6 +76,7 @@ struct FVoxelMapBakeResult
     int32 FilteredSky = 0;
     int32 FilteredNoMesh = 0;
     int32 FilteredNoMeshDescription = 0;
+    int32 FilteredOutOfScope = 0;
     bool bWorldPartitioned = false;
     bool bWorldPartitionFullyLoaded = false;
     bool bOutputRefreshedInPlace = false;
@@ -53,6 +86,15 @@ struct FVoxelMapBakeResult
     int64 DataAssetBytes = -1;
     int64 OutputMapBytes = -1;
     FString DataHash;
+    FString PreviousDataHash;
+    FString BakeScope;
+    bool bIncrementalCompatible = false;
+    int32 ReusedBlockCount = 0;
+    int32 ChangedBlockCount = 0;
+    int32 RemovedBlockCount = 0;
+    int32 ReusedPreviewChunkCount = 0;
+    int32 RebuiltPreviewChunkCount = 0;
+    int32 RemovedPreviewChunkCount = 0;
     bool bColorCaptureComplete = false;
     bool bColorCaptureSucceededWithFallback = false;
     FString ColorMode;

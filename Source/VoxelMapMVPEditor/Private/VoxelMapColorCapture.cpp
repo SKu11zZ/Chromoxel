@@ -402,6 +402,20 @@ bool FVoxelMapColorCapture::Capture(
     OutResult = FVoxelMapColorCaptureResult();
     OutResult.ColorMode = ColorMode;
     OutResult.CaptureVersion = CaptureVersion;
+    auto AbortIfCancelled = [&]() -> bool
+    {
+        if (Settings.ShouldCancel && Settings.ShouldCancel())
+        {
+            OutResult.CaptureStatus = TEXT("Cancelled");
+            OutResult.Error = TEXT("BaseColor capture cancelled by the user.");
+            return true;
+        }
+        return false;
+    };
+    if (AbortIfCancelled())
+    {
+        return false;
+    }
 
     const bool bCommandletRenderingAllowed =
         !IsRunningCommandlet() || IsAllowCommandletRendering();
@@ -498,6 +512,10 @@ bool FVoxelMapColorCapture::Capture(
     TSet<UPrimitiveComponent*> UniqueShowOnlyComponents;
     for (UPrimitiveComponent* Component : ShowOnlyComponents)
     {
+        if (AbortIfCancelled())
+        {
+            return false;
+        }
         if (!Component ||
             !IsValid(Component) ||
             Component->GetWorld() != World ||
@@ -545,6 +563,10 @@ bool FVoxelMapColorCapture::Capture(
 
     for (UPrimitiveComponent* Component : EligibleShowOnlyComponents)
     {
+        if (AbortIfCancelled())
+        {
+            return false;
+        }
         if (Component->IsPSOPrecaching())
         {
             ++PSOPrecachingComponentCountBeforeWait;
@@ -870,6 +892,14 @@ bool FVoxelMapColorCapture::Capture(
 
     for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
     {
+        if (Settings.ReportViewProgress)
+        {
+            Settings.ReportViewProgress(ViewIndex, Views.Num());
+        }
+        if (AbortIfCancelled())
+        {
+            return false;
+        }
         const FViewSetup& View = Views[ViewIndex];
         FVoxelMapColorCaptureViewStats& ViewStats = OutResult.Views[ViewIndex];
         ViewStats.ViewName = View.Name;
@@ -1057,6 +1087,10 @@ bool FVoxelMapColorCapture::Capture(
         double FiniteDepthMaximum = TNumericLimits<double>::Lowest();
         for (int32 PixelIndex = 0; PixelIndex < ExpectedPixelCount; ++PixelIndex)
         {
+            if ((PixelIndex & 65535) == 0 && AbortIfCancelled())
+            {
+                return false;
+            }
             const double Depth = static_cast<double>(DepthPixels[PixelIndex].R);
             const FLinearColor& LinearColor = BaseColorPixels[PixelIndex];
             const bool bFiniteDepth = FMath::IsFinite(Depth);
@@ -1285,6 +1319,11 @@ bool FVoxelMapColorCapture::Capture(
             ViewStats.DepthHitPixelCount,
             ViewStats.OccupiedLookupPixelCount,
             *ViewStats.FallbackReason);
+    }
+
+    if (Settings.ReportViewProgress)
+    {
+        Settings.ReportViewProgress(Views.Num(), Views.Num());
     }
 
     OutResult.bAllViewsClearDepth =

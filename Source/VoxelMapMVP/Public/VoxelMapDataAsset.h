@@ -185,6 +185,15 @@ public:
     UPROPERTY(VisibleAnywhere, Category = "Source")
     int32 WorldPartitionLoadedReferenceCount = 0;
 
+    UPROPERTY(VisibleAnywhere, Category = "Source")
+    FString BakeScope = TEXT("World");
+
+    UPROPERTY(VisibleAnywhere, Category = "Source")
+    FVector ScopeBoundsMin = FVector::ZeroVector;
+
+    UPROPERTY(VisibleAnywhere, Category = "Source")
+    FVector ScopeBoundsMax = FVector::ZeroVector;
+
     UPROPERTY(VisibleAnywhere, Category = "Bake")
     FVector BakeOrigin = FVector::ZeroVector;
 
@@ -221,8 +230,39 @@ public:
     UPROPERTY(VisibleAnywhere, Category = "Bake")
     FString BuildSummary;
 
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Materials")
+    int32 SourceMaterialSlotCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Materials")
+    int32 SourceUniqueMaterialCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Materials")
+    int32 SourceNullMaterialSlotCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Materials")
+    int32 MultiMaterialComponentCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Incremental")
+    bool bIncrementalCompatible = false;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Incremental")
+    int32 ReusedBlockCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Incremental")
+    int32 ChangedBlockCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Incremental")
+    int32 RemovedBlockCount = 0;
+
+    UPROPERTY(VisibleAnywhere, Category = "Bake|Incremental")
+    FString PreviousDataHash;
+
     UPROPERTY(VisibleAnywhere, Category = "Voxel Map")
     TArray<FVoxelMapBlock> Blocks;
+
+    /** One stable geometry+color content hash per canonical block. */
+    UPROPERTY(VisibleAnywhere, Category = "Voxel Map")
+    TArray<uint64> BlockContentHashes;
 
     /**
      * One 0x00RRGGBB sRGB value per occupied voxel. Ordering is canonical:

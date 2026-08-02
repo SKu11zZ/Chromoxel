@@ -19,6 +19,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -55,6 +56,11 @@ struct FCollectionStats
     int32 FilteredNoCollision = 0;
     int32 FilteredSky = 0;
     int32 FilteredNoMesh = 0;
+    int32 FilteredOutOfScope = 0;
+    int32 MaterialSlotCount = 0;
+    int32 NullMaterialSlotCount = 0;
+    int32 MultiMaterialComponentCount = 0;
+    TSet<UMaterialInterface*> UniqueMaterials;
 };
 
 bool IsSkyMesh(const UStaticMesh* Mesh)
@@ -112,7 +118,20 @@ bool IsComponentEligible(UStaticMeshComponent* Component, FCollectionStats& Stat
     return true;
 }
 
-void CollectWorkItems(UWorld* World, TArray<FMeshWorkItem>& OutItems, FCollectionStats& OutStats)
+bool TransformIntersectsScopeBounds(
+    const UStaticMesh* Mesh,
+    const FTransform& WorldTransform,
+    const FVoxelMapBakeOptions& Options)
+{
+    return Options.Scope != EVoxelMapBakeScope::Bounds ||
+        (Mesh && Mesh->GetBoundingBox().TransformBy(WorldTransform).Intersect(Options.ScopeBounds));
+}
+
+void CollectWorkItems(
+    UWorld* World,
+    const FVoxelMapBakeOptions& Options,
+    TArray<FMeshWorkItem>& OutItems,
+    FCollectionStats& OutStats)
 {
     TSet<AActor*> SourceActors;
     TSet<UStaticMeshComponent*> SourceComponents;
@@ -121,6 +140,11 @@ void CollectWorkItems(UWorld* World, TArray<FMeshWorkItem>& OutItems, FCollectio
     {
         AActor* Actor = *ActorIt;
         if (!Actor || Actor->IsA<AVoxelMapPreviewActor>())
+        {
+            continue;
+        }
+        if (Options.Scope == EVoxelMapBakeScope::SelectedActors &&
+            !Options.SelectedActorPaths.Contains(Actor->GetPathName()))
         {
             continue;
         }
@@ -134,8 +158,7 @@ void CollectWorkItems(UWorld* World, TArray<FMeshWorkItem>& OutItems, FCollectio
             }
 
             UStaticMesh* Mesh = Component->GetStaticMesh();
-            SourceActors.Add(Actor);
-            SourceComponents.Add(Component);
+            bool bIncludedComponent = false;
 
             if (UInstancedStaticMeshComponent* InstancedComponent = Cast<UInstancedStaticMeshComponent>(Component))
             {
@@ -143,15 +166,45 @@ void CollectWorkItems(UWorld* World, TArray<FMeshWorkItem>& OutItems, FCollectio
                 for (int32 InstanceIndex = 0; InstanceIndex < InstanceCount; ++InstanceIndex)
                 {
                     FTransform InstanceWorldTransform;
-                    if (InstancedComponent->GetInstanceTransform(InstanceIndex, InstanceWorldTransform, true))
+                    if (InstancedComponent->GetInstanceTransform(InstanceIndex, InstanceWorldTransform, true) &&
+                        TransformIntersectsScopeBounds(Mesh, InstanceWorldTransform, Options))
                     {
                         OutItems.Add({Mesh, InstanceWorldTransform, Component});
+                        bIncludedComponent = true;
                     }
                 }
             }
-            else
+            else if (TransformIntersectsScopeBounds(Mesh, Component->GetComponentTransform(), Options))
             {
                 OutItems.Add({Mesh, Component->GetComponentTransform(), Component});
+                bIncludedComponent = true;
+            }
+
+            if (!bIncludedComponent)
+            {
+                ++OutStats.FilteredOutOfScope;
+                continue;
+            }
+
+            SourceActors.Add(Actor);
+            if (!SourceComponents.Contains(Component))
+            {
+                SourceComponents.Add(Component);
+                const int32 MaterialCount = Component->GetNumMaterials();
+                OutStats.MaterialSlotCount += MaterialCount;
+                OutStats.MultiMaterialComponentCount += MaterialCount > 1 ? 1 : 0;
+                for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+                {
+                    UMaterialInterface* Material = Component->GetMaterial(MaterialIndex);
+                    if (Material)
+                    {
+                        OutStats.UniqueMaterials.Add(Material);
+                    }
+                    else
+                    {
+                        ++OutStats.NullMaterialSlotCount;
+                    }
+                }
             }
         }
     }
@@ -280,6 +333,45 @@ FString BuildColorHash(const TArray<uint32>& PackedColors)
     return BytesToHex(Hash, UE_ARRAY_COUNT(Hash));
 }
 
+void AppendFNV1a64(uint64& Hash, const void* Data, int64 NumBytes)
+{
+    constexpr uint64 Prime = 1099511628211ull;
+    const uint8* Bytes = static_cast<const uint8*>(Data);
+    for (int64 Index = 0; Index < NumBytes; ++Index)
+    {
+        Hash ^= Bytes[Index];
+        Hash *= Prime;
+    }
+}
+
+TArray<uint64> BuildBlockContentHashes(
+    const TArray<FVoxelMapBlock>& Blocks,
+    const TArray<uint32>& PackedColors)
+{
+    TArray<uint64> Hashes;
+    Hashes.Reserve(Blocks.Num());
+    int32 CanonicalColorIndex = 0;
+    for (const FVoxelMapBlock& Block : Blocks)
+    {
+        uint64 Hash = 1469598103934665603ull;
+        const int32 Coords[] = {Block.BlockCoord.X, Block.BlockCoord.Y, Block.BlockCoord.Z};
+        AppendFNV1a64(Hash, Coords, sizeof(Coords));
+        AppendFNV1a64(Hash, &Block.OccupancyMask, sizeof(Block.OccupancyMask));
+        uint64 RemainingMask = Block.OccupancyMask;
+        while (RemainingMask != 0)
+        {
+            RemainingMask &= RemainingMask - 1;
+            const uint32 PackedColor = PackedColors.IsValidIndex(CanonicalColorIndex)
+                ? PackedColors[CanonicalColorIndex]
+                : UVoxelMapDataAsset::DefaultPackedColor;
+            AppendFNV1a64(Hash, &PackedColor, sizeof(PackedColor));
+            ++CanonicalColorIndex;
+        }
+        Hashes.Add(Hash);
+    }
+    return Hashes;
+}
+
 bool ValidateColorConsistency(
     const FVoxelMapBakeOptions& Options,
     const FVoxelMapBakeResult& Result,
@@ -375,11 +467,12 @@ bool ValidateColorConsistency(
 bool SaveDataAsset(
     const FString& DataAssetPath,
     const FVoxelMapBakeOptions& Options,
-    const FVoxelMapBakeResult& Result,
+    FVoxelMapBakeResult& Result,
     const FVector3d& Origin,
     const FBox& Bounds,
     const TArray<FVoxelMapBlock>& Blocks,
     const TArray<uint32>& PackedColors,
+    const TArray<uint64>& BlockContentHashes,
     UVoxelMapDataAsset*& OutAsset,
     FString& OutError)
 {
@@ -405,7 +498,13 @@ bool SaveDataAsset(
     }
 
     const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *DataAssetPath, *AssetName);
-    OutAsset = LoadObject<UVoxelMapDataAsset>(nullptr, *ObjectPath);
+    // A missing package is the expected first-bake path, so probe without
+    // emitting a misleading LogUObjectGlobals warning.
+    OutAsset = LoadObject<UVoxelMapDataAsset>(
+        nullptr,
+        *ObjectPath,
+        nullptr,
+        LOAD_NoWarn);
     bool bCreatedNewAsset = false;
     UPackage* Package = nullptr;
     if (!OutAsset)
@@ -423,11 +522,60 @@ bool SaveDataAsset(
         OutAsset->Modify();
     }
 
+    Result.PreviousDataHash = OutAsset->DataHash;
+    const bool bOldHashesValid =
+        OutAsset->BlockContentHashes.Num() == OutAsset->Blocks.Num();
+    Result.bIncrementalCompatible =
+        !bCreatedNewAsset &&
+        Options.bEnableIncrementalBlocks &&
+        bOldHashesValid &&
+        FMath::IsNearlyEqual(OutAsset->VoxelSize, Options.VoxelSize, 1.0e-4f) &&
+        OutAsset->BakeOrigin.Equals(FVector(Origin), 1.0e-3);
+    if (Result.bIncrementalCompatible)
+    {
+        TMap<FIntVector, uint64> OldHashes;
+        OldHashes.Reserve(OutAsset->Blocks.Num());
+        for (int32 Index = 0; Index < OutAsset->Blocks.Num(); ++Index)
+        {
+            OldHashes.Add(
+                OutAsset->Blocks[Index].BlockCoord,
+                OutAsset->BlockContentHashes[Index]);
+        }
+        TSet<FIntVector> NewCoords;
+        NewCoords.Reserve(Blocks.Num());
+        for (int32 Index = 0; Index < Blocks.Num(); ++Index)
+        {
+            const FIntVector Coord = Blocks[Index].BlockCoord;
+            NewCoords.Add(Coord);
+            const uint64* OldHash = OldHashes.Find(Coord);
+            if (OldHash && *OldHash == BlockContentHashes[Index])
+            {
+                ++Result.ReusedBlockCount;
+            }
+            else
+            {
+                ++Result.ChangedBlockCount;
+            }
+        }
+        for (const TPair<FIntVector, uint64>& OldPair : OldHashes)
+        {
+            Result.RemovedBlockCount += NewCoords.Contains(OldPair.Key) ? 0 : 1;
+        }
+    }
+    else
+    {
+        Result.ChangedBlockCount = Blocks.Num();
+        Result.RemovedBlockCount = bCreatedNewAsset ? 0 : OutAsset->Blocks.Num();
+    }
+
     OutAsset->SourceMap = Options.SourceMapPath;
     OutAsset->bSourceWorldPartitioned = Result.bWorldPartitioned;
     OutAsset->bWorldPartitionFullyLoadedForBake = Result.bWorldPartitionFullyLoaded;
     OutAsset->WorldPartitionActorDescriptorCount = Result.WorldPartitionActorDescriptorCount;
     OutAsset->WorldPartitionLoadedReferenceCount = Result.WorldPartitionLoadedReferenceCount;
+    OutAsset->BakeScope = Result.BakeScope;
+    OutAsset->ScopeBoundsMin = Bounds.Min;
+    OutAsset->ScopeBoundsMax = Bounds.Max;
     OutAsset->BakeOrigin = FVector(Origin);
     OutAsset->BoundsMin = Bounds.Min;
     OutAsset->BoundsMax = Bounds.Max;
@@ -439,7 +587,17 @@ bool SaveDataAsset(
     OutAsset->SourceTriangleInstanceCount = Result.SourceTriangleInstanceCount;
     OutAsset->BakeSeconds = Result.BakeSeconds;
     OutAsset->DataHash = Result.DataHash;
+    OutAsset->SourceMaterialSlotCount = Result.SourceMaterialSlotCount;
+    OutAsset->SourceUniqueMaterialCount = Result.SourceUniqueMaterialCount;
+    OutAsset->SourceNullMaterialSlotCount = Result.SourceNullMaterialSlotCount;
+    OutAsset->MultiMaterialComponentCount = Result.MultiMaterialComponentCount;
+    OutAsset->bIncrementalCompatible = Result.bIncrementalCompatible;
+    OutAsset->ReusedBlockCount = Result.ReusedBlockCount;
+    OutAsset->ChangedBlockCount = Result.ChangedBlockCount;
+    OutAsset->RemovedBlockCount = Result.RemovedBlockCount;
+    OutAsset->PreviousDataHash = Result.PreviousDataHash;
     OutAsset->Blocks = Blocks;
+    OutAsset->BlockContentHashes = BlockContentHashes;
     OutAsset->PackedVoxelColors = PackedColors;
     OutAsset->ColorMode = Result.ColorMode;
     OutAsset->ColorCaptureVersion = Result.ColorCaptureVersion;
@@ -471,17 +629,22 @@ bool SaveDataAsset(
     OutAsset->ColorCaptureViews = Result.ColorCaptureViews;
     OutAsset->BuildSummary = FString::Printf(
         TEXT("%d voxels, %d blocks, %d actors, %d components, %d mesh instances, %.3f s, ")
-        TEXT("Geometry SHA1 %s, Color SHA1 %s, coverage %.2f%% (%s)"),
+        TEXT("scope %s, Geometry SHA1 %s, Color SHA1 %s, coverage %.2f%% (%s), ")
+        TEXT("blocks reused/changed/removed %d/%d/%d"),
         Result.OccupiedVoxelCount,
         Result.BlockCount,
         Result.SourceActorCount,
         Result.SourceComponentCount,
         Result.SourceMeshInstanceCount,
         Result.BakeSeconds,
+        *Result.BakeScope,
         *Result.DataHash,
         *Result.ColorHash,
         Result.ColorCoverage * 100.0f,
-        *Result.ColorCaptureStatus);
+        *Result.ColorCaptureStatus,
+        Result.ReusedBlockCount,
+        Result.ChangedBlockCount,
+        Result.RemovedBlockCount);
 
     OutAsset->MarkPackageDirty();
     Package->MarkPackageDirty();
@@ -531,6 +694,13 @@ bool WriteReport(const FVoxelMapBakeOptions& Options, FVoxelMapBakeResult& Resul
     Root->SetStringField(TEXT("source_map"), Options.SourceMapPath);
     Root->SetStringField(TEXT("output_map"), Options.OutputMapPath);
     Root->SetStringField(TEXT("data_asset"), Options.DataAssetPath);
+    Root->SetStringField(TEXT("bake_scope"), Result.BakeScope);
+    Root->SetNumberField(TEXT("scope_bounds_min_x"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Min.X : 0.0);
+    Root->SetNumberField(TEXT("scope_bounds_min_y"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Min.Y : 0.0);
+    Root->SetNumberField(TEXT("scope_bounds_min_z"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Min.Z : 0.0);
+    Root->SetNumberField(TEXT("scope_bounds_max_x"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Max.X : 0.0);
+    Root->SetNumberField(TEXT("scope_bounds_max_y"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Max.Y : 0.0);
+    Root->SetNumberField(TEXT("scope_bounds_max_z"), Options.Scope == EVoxelMapBakeScope::Bounds ? Options.ScopeBounds.Max.Z : 0.0);
     Root->SetNumberField(TEXT("voxel_size_cm"), Options.VoxelSize);
     Root->SetNumberField(TEXT("occupied_voxels"), Result.OccupiedVoxelCount);
     Root->SetNumberField(TEXT("blocks_4x4x4"), Result.BlockCount);
@@ -538,6 +708,10 @@ bool WriteReport(const FVoxelMapBakeOptions& Options, FVoxelMapBakeResult& Resul
     Root->SetNumberField(TEXT("source_components"), Result.SourceComponentCount);
     Root->SetNumberField(TEXT("source_mesh_instances"), Result.SourceMeshInstanceCount);
     Root->SetNumberField(TEXT("unique_meshes"), Result.UniqueMeshCount);
+    Root->SetNumberField(TEXT("material_slots"), Result.SourceMaterialSlotCount);
+    Root->SetNumberField(TEXT("unique_materials"), Result.SourceUniqueMaterialCount);
+    Root->SetNumberField(TEXT("null_material_slots"), Result.SourceNullMaterialSlotCount);
+    Root->SetNumberField(TEXT("multi_material_components"), Result.MultiMaterialComponentCount);
     Root->SetNumberField(TEXT("triangle_instances"), static_cast<double>(Result.SourceTriangleInstanceCount));
     Root->SetNumberField(TEXT("candidate_tests"), static_cast<double>(Result.CandidateTests));
     Root->SetNumberField(TEXT("bake_seconds"), Result.BakeSeconds);
@@ -546,6 +720,14 @@ bool WriteReport(const FVoxelMapBakeOptions& Options, FVoxelMapBakeResult& Resul
     Root->SetStringField(TEXT("data_sha1"), Result.DataHash);
     Root->SetStringField(TEXT("geometry_hash"), Result.DataHash);
     Root->SetStringField(TEXT("GeometryHash"), Result.DataHash);
+    Root->SetStringField(TEXT("previous_geometry_hash"), Result.PreviousDataHash);
+    Root->SetBoolField(TEXT("incremental_compatible"), Result.bIncrementalCompatible);
+    Root->SetNumberField(TEXT("reused_blocks"), Result.ReusedBlockCount);
+    Root->SetNumberField(TEXT("changed_blocks"), Result.ChangedBlockCount);
+    Root->SetNumberField(TEXT("removed_blocks"), Result.RemovedBlockCount);
+    Root->SetNumberField(TEXT("reused_preview_chunks"), Result.ReusedPreviewChunkCount);
+    Root->SetNumberField(TEXT("rebuilt_preview_chunks"), Result.RebuiltPreviewChunkCount);
+    Root->SetNumberField(TEXT("removed_preview_chunks"), Result.RemovedPreviewChunkCount);
     Root->SetStringField(TEXT("color_mode"), Result.ColorMode);
     Root->SetStringField(TEXT("color_capture_version"), Result.ColorCaptureVersion);
     Root->SetStringField(TEXT("color_capture_status"), Result.ColorCaptureStatus);
@@ -618,6 +800,7 @@ bool WriteReport(const FVoxelMapBakeOptions& Options, FVoxelMapBakeResult& Resul
     Filtered->SetNumberField(TEXT("sky_sphere"), Result.FilteredSky);
     Filtered->SetNumberField(TEXT("no_mesh"), Result.FilteredNoMesh);
     Filtered->SetNumberField(TEXT("no_mesh_description"), Result.FilteredNoMeshDescription);
+    Filtered->SetNumberField(TEXT("out_of_scope"), Result.FilteredOutOfScope);
     Root->SetObjectField(TEXT("filtered_components"), Filtered);
 
     TArray<TSharedPtr<FJsonValue>> FallbackReasonValues;
@@ -757,7 +940,9 @@ bool WriteReport(const FVoxelMapBakeOptions& Options, FVoxelMapBakeResult& Resul
         TEXT("Color uses Deferred SCS_BaseColor plus SCS_SceneDepth only; no lit SceneColor fallback is permitted. Unhit occupied voxels are explicit #808080."));
     Root->SetStringField(
         TEXT("scope_note"),
-        TEXT("MVP surface voxelization and six-axis BaseColor capture only: static collision-enabled StaticMesh/ISM/HISM; no Landscape, Nanite fallback, Foliage, PCG, Skeletal Mesh, or Forward renderer. General World Partition is unsupported; only the allow-listed small FirstPerson template map is synchronously fully loaded."));
+        FString::Printf(
+            TEXT("Scope=%s. Surface voxelization and six-axis BaseColor capture include every material slot on eligible static collision-enabled StaticMesh/ISM/HISM components; no Landscape, Nanite fallback, Foliage, PCG, Skeletal Mesh, or Forward renderer. General World Partition is unsupported; only the allow-listed small FirstPerson template map is synchronously fully loaded."),
+            *Result.BakeScope));
 
     FString Json;
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Json);
@@ -793,6 +978,7 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     OutResult.DataAssetPath = Options.DataAssetPath;
     OutResult.OutputMapPath = Options.OutputMapPath;
     OutResult.bWorldPartitioned = World && World->IsPartitionedWorld();
+    OutResult.BakeScope = VoxelMapBakeScopeToString(Options.Scope);
 
     if (!World)
     {
@@ -815,8 +1001,48 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         OutResult.Error = TEXT("Output map must differ from the source map.");
         return false;
     }
+    if (Options.Scope == EVoxelMapBakeScope::SelectedActors &&
+        Options.SelectedActorPaths.IsEmpty())
+    {
+        OutResult.Error = TEXT("SelectedActors scope requires at least one selected actor path.");
+        return false;
+    }
+    if (Options.Scope == EVoxelMapBakeScope::Bounds && !Options.ScopeBounds.IsValid)
+    {
+        OutResult.Error = TEXT("Bounds scope requires a valid non-empty world-space FBox.");
+        return false;
+    }
+    if (Options.ProgressUpdateInterval <= 0)
+    {
+        OutResult.Error = TEXT("ProgressUpdateInterval must be greater than zero.");
+        return false;
+    }
 
     const double StartTime = FPlatformTime::Seconds();
+    const bool bUseProgressDialog =
+        Options.bShowProgressDialog && !IsRunningCommandlet();
+    FScopedSlowTask SlowTask(
+        100.0f,
+        FText::FromString(FString::Printf(
+            TEXT("Chromoxel: baking %s at %.0f cm"),
+            *OutResult.BakeScope,
+            Options.VoxelSize)),
+        bUseProgressDialog);
+    if (bUseProgressDialog)
+    {
+        SlowTask.MakeDialog(true);
+    }
+    auto CheckCancelled = [&]() -> bool
+    {
+        if (Options.bAllowCancel && SlowTask.ShouldCancel())
+        {
+            OutResult.bCancelled = true;
+            OutResult.Error = TEXT("Chromoxel bake cancelled by the user.");
+            return true;
+        }
+        return false;
+    };
+    SlowTask.EnterProgressFrame(2.0f, FText::FromString(TEXT("Preparing source world")));
 
     // Narrow WP exception for the known small UE 5.8 First Person template map.
     // Hard references remain alive through collection and Save-As, preventing cells
@@ -883,10 +1109,14 @@ bool FVoxelMapBaker::BakeWorldAndSave(
 
     World->FlushLevelStreaming(EFlushLevelStreamingType::Full);
     World->UpdateWorldComponents(true, false);
+    if (CheckCancelled())
+    {
+        return false;
+    }
 
     TArray<FMeshWorkItem> WorkItems;
     FCollectionStats CollectionStats;
-    CollectWorkItems(World, WorkItems, CollectionStats);
+    CollectWorkItems(World, Options, WorkItems, CollectionStats);
     OutResult.SourceActorCount = CollectionStats.ActorCount;
     OutResult.SourceComponentCount = CollectionStats.ComponentCount;
     OutResult.SourceMeshInstanceCount = CollectionStats.MeshInstanceCount;
@@ -895,10 +1125,23 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     OutResult.FilteredNoCollision = CollectionStats.FilteredNoCollision;
     OutResult.FilteredSky = CollectionStats.FilteredSky;
     OutResult.FilteredNoMesh = CollectionStats.FilteredNoMesh;
+    OutResult.FilteredOutOfScope = CollectionStats.FilteredOutOfScope;
+    OutResult.SourceMaterialSlotCount = CollectionStats.MaterialSlotCount;
+    OutResult.SourceUniqueMaterialCount = CollectionStats.UniqueMaterials.Num();
+    OutResult.SourceNullMaterialSlotCount = CollectionStats.NullMaterialSlotCount;
+    OutResult.MultiMaterialComponentCount = CollectionStats.MultiMaterialComponentCount;
 
     if (WorkItems.IsEmpty())
     {
         OutResult.Error = TEXT("No eligible StaticMeshComponent, ISM, or HISM instances were found.");
+        return false;
+    }
+    SlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(
+        TEXT("Collected %d mesh instance(s) and %d material slot(s)"),
+        WorkItems.Num(),
+        OutResult.SourceMaterialSlotCount)));
+    if (CheckCancelled())
+    {
         return false;
     }
 
@@ -910,6 +1153,11 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         UniqueMeshes.Add(Item.Mesh);
     }
     OutResult.UniqueMeshCount = UniqueMeshes.Num();
+
+    if (Options.Scope == EVoxelMapBakeScope::Bounds)
+    {
+        WorldBounds = Options.ScopeBounds;
+    }
 
     if (!WorldBounds.IsValid)
     {
@@ -942,6 +1190,20 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     OccupiedCells.Reserve(FMath::Min(Options.MaxOccupiedVoxels, WorkItems.Num() * 512));
     const FVector3d HalfExtent(VoxelSize * 0.5);
 
+    int64 TotalTriangleInstances = 0;
+    for (const FMeshWorkItem& Item : WorkItems)
+    {
+        if (const FMeshDescription* MeshDescription = Item.Mesh->GetMeshDescription(0))
+        {
+            TotalTriangleInstances += MeshDescription->Triangles().Num();
+        }
+    }
+    OutResult.SourceTriangleInstanceCount = TotalTriangleInstances;
+    int64 ProcessedTriangles = 0;
+    int64 LastReportedTriangle = 0;
+    int64 VisitedCandidates = 0;
+    int64 NextCandidateCancelCheck = Options.ProgressUpdateInterval;
+
     for (const FMeshWorkItem& Item : WorkItems)
     {
         FMeshDescription* MeshDescription = Item.Mesh->GetMeshDescription(0);
@@ -953,10 +1215,9 @@ bool FVoxelMapBaker::BakeWorldAndSave(
 
         const FStaticMeshConstAttributes Attributes(*MeshDescription);
         const TVertexAttributesConstRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
-        OutResult.SourceTriangleInstanceCount += MeshDescription->Triangles().Num();
-
         for (const FTriangleID TriangleID : MeshDescription->Triangles().GetElementIDs())
         {
+            ++ProcessedTriangles;
             const TArrayView<const FVertexInstanceID> VertexInstances =
                 MeshDescription->GetTriangleVertexInstances(TriangleID);
             if (VertexInstances.Num() != 3)
@@ -1008,6 +1269,16 @@ bool FVoxelMapBaker::BakeWorldAndSave(
                 {
                     for (int32 X = MinCell.X; X <= MaxTriangleCell.X; ++X)
                     {
+                        ++VisitedCandidates;
+                        if (VisitedCandidates >= NextCandidateCancelCheck)
+                        {
+                            if (CheckCancelled())
+                            {
+                                return false;
+                            }
+                            NextCandidateCancelCheck =
+                                VisitedCandidates + Options.ProgressUpdateInterval;
+                        }
                         const FIntVector Cell(X, Y, Z);
                         const FVector3d Center =
                             Origin +
@@ -1027,7 +1298,33 @@ bool FVoxelMapBaker::BakeWorldAndSave(
                     }
                 }
             }
+
+            if (ProcessedTriangles - LastReportedTriangle >= Options.ProgressUpdateInterval)
+            {
+                const float Work = TotalTriangleInstances > 0
+                    ? 52.0f * static_cast<float>(ProcessedTriangles - LastReportedTriangle) /
+                        static_cast<float>(TotalTriangleInstances)
+                    : 0.0f;
+                SlowTask.EnterProgressFrame(
+                    Work,
+                    FText::FromString(FString::Printf(
+                        TEXT("Voxelizing triangles %lld / %lld"),
+                        ProcessedTriangles,
+                        TotalTriangleInstances)));
+                LastReportedTriangle = ProcessedTriangles;
+                if (CheckCancelled())
+                {
+                    return false;
+                }
+            }
         }
+    }
+    if (ProcessedTriangles > LastReportedTriangle && TotalTriangleInstances > 0)
+    {
+        SlowTask.EnterProgressFrame(
+            52.0f * static_cast<float>(ProcessedTriangles - LastReportedTriangle) /
+                static_cast<float>(TotalTriangleInstances),
+            FText::FromString(TEXT("Finalizing occupied blocks")));
     }
 
     if (OccupiedCells.IsEmpty())
@@ -1093,7 +1390,27 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     ColorSettings.MaxViewResolution = Options.ColorMaxViewResolution;
     ColorSettings.PixelsPerVoxel = Options.ColorPixelsPerVoxel;
     ColorSettings.MinimumAcceptedCoverage = Options.MinimumColorCoverage;
+    ColorSettings.ShouldCancel = [&]()
+    {
+        return Options.bAllowCancel && SlowTask.ShouldCancel();
+    };
+    int32 ReportedColorViews = 0;
+    ColorSettings.ReportViewProgress = [&](int32 CompletedViews, int32 TotalViews)
+    {
+        const int32 Delta = FMath::Max(0, CompletedViews - ReportedColorViews);
+        const float Work = TotalViews > 0
+            ? 18.0f * static_cast<float>(Delta) / static_cast<float>(TotalViews)
+            : 0.0f;
+        SlowTask.EnterProgressFrame(
+            Work,
+            FText::FromString(FString::Printf(
+                TEXT("Capturing BaseColor view %d / %d"),
+                FMath::Min(CompletedViews + 1, TotalViews),
+                TotalViews)));
+        ReportedColorViews = CompletedViews;
+    };
 
+    SlowTask.EnterProgressFrame(3.0f, FText::FromString(TEXT("Preparing six-axis BaseColor capture")));
     FVoxelMapColorCaptureResult ColorCapture;
     if (!FVoxelMapColorCapture::Capture(
             World,
@@ -1105,8 +1422,12 @@ bool FVoxelMapBaker::BakeWorldAndSave(
             ColorSettings,
             ColorCapture))
     {
+        OutResult.bCancelled = ColorCapture.CaptureStatus.Equals(
+            TEXT("Cancelled"),
+            ESearchCase::CaseSensitive);
         OutResult.Error = FString::Printf(
-            TEXT("BaseColor capture failed closed: %s"),
+            TEXT("BaseColor capture %s: %s"),
+            OutResult.bCancelled ? TEXT("cancelled") : TEXT("failed closed"),
             *ColorCapture.Error);
         return false;
     }
@@ -1156,6 +1477,12 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         return false;
     }
 
+    if (CheckCancelled())
+    {
+        return false;
+    }
+
+    SlowTask.EnterProgressFrame(5.0f, FText::FromString(TEXT("Preparing preview material and incremental blocks")));
     UMaterialInterface* PreviewMaterial = nullptr;
     if (!FVoxelMapPreviewMaterial::EnsurePersistentMaterial(
             PreviewMaterial,
@@ -1167,6 +1494,9 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     const TStrongObjectPtr<UMaterialInterface> PreviewMaterialGuard(PreviewMaterial);
 
     OutResult.BakeSeconds = FPlatformTime::Seconds() - StartTime;
+    const TArray<uint64> BlockContentHashes = BuildBlockContentHashes(
+        Blocks,
+        ColorCapture.PackedColors);
 
     UVoxelMapDataAsset* DataAsset = nullptr;
     if (!SaveDataAsset(
@@ -1177,8 +1507,18 @@ bool FVoxelMapBaker::BakeWorldAndSave(
             WorldBounds,
             Blocks,
             ColorCapture.PackedColors,
+            BlockContentHashes,
             DataAsset,
             OutResult.Error))
+    {
+        return false;
+    }
+    SlowTask.EnterProgressFrame(5.0f, FText::FromString(FString::Printf(
+        TEXT("Saving data: %d reused, %d changed, %d removed blocks"),
+        OutResult.ReusedBlockCount,
+        OutResult.ChangedBlockCount,
+        OutResult.RemovedBlockCount)));
+    if (CheckCancelled())
     {
         return false;
     }
@@ -1272,6 +1612,9 @@ bool FVoxelMapBaker::BakeWorldAndSave(
     PreviewActor->VoxelData = DataAssetGuard.Get();
     PreviewActor->PreviewInstances->SetMaterial(0, PreviewMaterialGuard.Get());
     PreviewActor->RebuildPreview();
+    OutResult.ReusedPreviewChunkCount = PreviewActor->LastReusedPreviewChunkCount;
+    OutResult.RebuiltPreviewChunkCount = PreviewActor->LastRebuiltPreviewChunkCount;
+    OutResult.RemovedPreviewChunkCount = PreviewActor->LastRemovedPreviewChunkCount;
     PreviewActor->MarkPackageDirty();
     PreviewActor->PreviewInstances->MarkPackageDirty();
     WorldToSave->MarkPackageDirty();
@@ -1294,6 +1637,8 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         return false;
     }
 
+    SlowTask.EnterProgressFrame(7.0f, FText::FromString(TEXT("Chromoxel bake complete")));
+
     OutResult.bSuccess = true;
     UE_LOG(
         LogVoxelMapMVP,
@@ -1301,7 +1646,7 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         TEXT("VOXELMAP_BAKE_SUCCESS voxels=%d blocks=%d actors=%d components=%d instances=%d ")
         TEXT("triangles=%lld candidates=%lld seconds=%.3f geometry_hash=%s color_status=%s ")
         TEXT("captured=%d fallback=%d coverage=%.6f unique=%d color_hash=%s config_hash=%s ")
-        TEXT("data=%s map=%s report=%s"),
+        TEXT("preview_chunks_reused=%d rebuilt=%d removed=%d data=%s map=%s report=%s"),
         OutResult.OccupiedVoxelCount,
         OutResult.BlockCount,
         OutResult.SourceActorCount,
@@ -1318,6 +1663,9 @@ bool FVoxelMapBaker::BakeWorldAndSave(
         OutResult.UniqueColorCount,
         *OutResult.ColorHash,
         *OutResult.CaptureConfigHash,
+        OutResult.ReusedPreviewChunkCount,
+        OutResult.RebuiltPreviewChunkCount,
+        OutResult.RemovedPreviewChunkCount,
         *Options.DataAssetPath,
         *Options.OutputMapPath,
         *OutResult.ReportPath);

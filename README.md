@@ -4,7 +4,7 @@
 
 **面向 Unreal Engine 5.8、支持 BaseColor 捕获与持久化 HISM 预览的编辑器体素化插件。**
 
-**Version / 版本：** 0.2.0 · **Status / 状态：** Beta / Source Release ·
+**Version / 版本：** 0.3.0 · **Status / 状态：** Beta / Source Release ·
 **Target / 目标平台：** Unreal Engine 5.8, Win64 Editor
 
 [English](#english) · [简体中文](#简体中文)
@@ -24,6 +24,9 @@ never overwritten.
 
 - Collects visible, static, collision-enabled Static Mesh, ISM, and HISM
   components.
+- Bakes the whole world, selected actors, or geometry intersecting selected
+  Volume bounds.
+- Provides Fine (10 cm), Standard (25 cm), and Coarse (50 cm) presets.
 - CPU triangle/AABB surface voxelization with bounded work limits.
 - Deterministic `4 × 4 × 4` blocks using a `uint64` occupancy mask.
 - Six-axis orthographic Deferred `SCS_BaseColor` and linear-depth capture.
@@ -31,6 +34,13 @@ never overwritten.
 - Correct sRGB-to-linear conversion before HISM custom data reaches BaseColor.
 - Persistent copied output map and preview actor; repeated bakes update in
   place.
+- Stores stable per-block geometry+color hashes and reports reused, changed,
+  and removed blocks.
+- Splits the preview into reusable `16 × 16 × 16`-cell HISM chunks so unchanged
+  chunks keep their instance payload during repeated output-map updates.
+- Captures every material slot on eligible multi-material components and
+  records slot, unique-material, null-slot, and multi-material counts.
+- Shows cancellable progress across voxelization and six-view color capture.
 - Editor menu command and unattended commandlet entry point.
 - Detailed JSON diagnostics under `Saved/VoxelMapMVP`.
 
@@ -38,7 +48,7 @@ never overwritten.
 
 #### Source ZIP
 
-1. Download `chromoxel-unreal-0.2.0-UE5.8-source.zip` from [`dist`](dist) or
+1. Download `chromoxel-unreal-0.3.0-UE5.8-source.zip` from [`dist`](dist) or
    the latest GitHub Release.
 2. Extract its `Chromoxel` folder to `<YourProject>/Plugins/Chromoxel`.
 3. Do not copy generated `Binaries`, `Intermediate`, or `Saved` directories
@@ -51,14 +61,18 @@ code, Starter Content, project maps, or third-party asset packs.
 
 ### Editor workflow
 
-Open a supported level, open the **Tools** menu, and choose:
+Open a supported level and use one of the **Tools > Chromoxel** entries:
 
-`Bake Current Level (25 cm)`
+- **Bake World** — all eligible components;
+- **Bake Selected** — only currently selected actors;
+- **Bake Selected Volume** — geometry intersecting one or more selected
+  `Volume` actors;
+- **Fine / Standard / Coarse** — 10 / 25 / 50 cm voxel size.
 
 The command creates or updates:
 
-- `/Game/VoxelMapMVP/Data/VM_<Level>`;
-- `/Game/VoxelMapMVP/Maps/<Level>_Voxelized`;
+- `/Game/VoxelMapMVP/Data/VM_<Level>_<Scope>_<Size>cm`;
+- `/Game/VoxelMapMVP/Maps/<Level>_Voxelized_<Scope>_<Size>cm`;
 - `/Game/VoxelMapMVP/Materials/M_VoxelMapPreview_BaseColor`;
 - one persistent HISM preview actor; and
 - a JSON bake report under `Saved/VoxelMapMVP`.
@@ -74,7 +88,7 @@ UnrealEditor-Cmd.exe <YourProject>.uproject \
   -Map=/Game/Maps/<InputLevel> \
   -OutputMap=/Game/VoxelMapMVP/Maps/<InputLevel>_Voxelized \
   -DataAsset=/Game/VoxelMapMVP/Data/VM_<InputLevel> \
-  -VoxelSize=25 \
+  -Preset=Standard -Scope=World \
   -Report=VoxelMapMVP/BakeReport.json \
   -unattended -nop4 -nosplash -AllowCommandletRendering
 ```
@@ -83,13 +97,20 @@ The commandlet requires a rendering-capable client world, a non-Null RHI, and
 the Deferred renderer (`r.ForwardShading=0`). It fails closed instead of
 substituting lit SceneColor when BaseColor capture is unavailable.
 
+`-Preset=Fine|Standard|Coarse` maps to 10/25/50 cm; an explicit
+`-VoxelSize=<cm>` overrides it. Bounds scope additionally requires
+`-BoundsMin=X,Y,Z -BoundsMax=X,Y,Z`. Selected scope in a commandlet requires
+semicolon-separated object paths in `-ActorPaths=<PathA;PathB>`.
+
 ### Current limits
 
 - Surface shell only; no solid-volume fill.
 - No Landscape, Skeletal Mesh, PCG, Foliage, or Nanite fallback.
 - Static Mesh, ISM, and HISM BaseColor capture only.
 - General World Partition support is outside this MVP.
-- No incremental bake, clipmap, sparse streaming, or billboard renderer yet.
+- Incremental reconciliation currently reuses unchanged data/preview chunks;
+  triangle voxelization and six-view BaseColor capture still run for each bake.
+- No clipmap, sparse runtime streaming, or billboard renderer yet.
 - Safety caps bound axis size, triangle/voxel candidate tests, and occupied
   voxel count.
 
@@ -128,12 +149,19 @@ Chromoxel 提供一套紧凑的编辑器流程，用于表面体素化和 Deferr
 ### 功能特点
 
 - 收集可见、静态且启用碰撞的 Static Mesh、ISM 和 HISM 组件。
+- 支持烘焙整个世界、当前选中 Actor，或与已选 Volume 范围相交的几何体。
+- 提供 Fine（10 cm）、Standard（25 cm）和 Coarse（50 cm）三档预设。
 - 使用 CPU 三角形/AABB 表面体素化，并设置明确的工作量上限。
 - 使用 `uint64` 占用掩码存储确定性的 `4 × 4 × 4` Block。
 - 从六个正交方向执行 Deferred `SCS_BaseColor` 和线性深度捕获。
 - 在 `UVoxelMapDataAsset` 中以规范的 `0x00RRGGBB` sRGB 格式保存颜色。
 - 在 HISM 自定义数据进入 BaseColor 前正确执行 sRGB 到线性颜色转换。
 - 输出地图和 HISM 预览 Actor 可持久化保存；重复烘焙会原位更新。
+- 保存稳定的逐 Block 几何+颜色哈希，并报告复用、变化和移除的 Block 数量。
+- 将预览拆分为可独立复用的 `16 × 16 × 16` 单元 HISM Chunk；重复更新输出地图时，
+  未变化 Chunk 保留其实例数据。
+- 捕获合格多材质组件的全部材质槽，并记录材质槽、唯一材质、空槽和多材质组件数量。
+- 在体素化与六视角颜色捕获期间显示可取消的进度。
 - 提供编辑器菜单命令和无人值守 Commandlet 入口。
 - 在 `Saved/VoxelMapMVP` 下生成详细 JSON 诊断报告。
 
@@ -142,7 +170,7 @@ Chromoxel 提供一套紧凑的编辑器流程，用于表面体素化和 Deferr
 #### 源码 ZIP
 
 1. 从 [`dist`](dist) 目录或最新 GitHub Release 下载
-   `chromoxel-unreal-0.2.0-UE5.8-source.zip`。
+   `chromoxel-unreal-0.3.0-UE5.8-source.zip`。
 2. 将 ZIP 中的 `Chromoxel` 文件夹解压到 `<你的工程>/Plugins/Chromoxel`。
 3. 不要从其他机器复制生成的 `Binaries`、`Intermediate` 或 `Saved` 目录。
 4. 重新生成工程文件，并构建 Win64 Editor Target。
@@ -152,14 +180,17 @@ Chromoxel 提供一套紧凑的编辑器流程，用于表面体素化和 Deferr
 
 ### 编辑器流程
 
-打开受支持的关卡，在 **Tools** 菜单中选择：
+打开受支持的关卡，使用 **Tools > Chromoxel** 中的菜单项：
 
-`Bake Current Level (25 cm)`
+- **Bake World**：处理全部合格组件；
+- **Bake Selected**：只处理当前选中的 Actor；
+- **Bake Selected Volume**：处理与一个或多个已选 `Volume` Actor 相交的几何体；
+- **Fine / Standard / Coarse**：对应 10 / 25 / 50 cm 体素尺寸。
 
 该命令会创建或更新：
 
-- `/Game/VoxelMapMVP/Data/VM_<Level>`；
-- `/Game/VoxelMapMVP/Maps/<Level>_Voxelized`；
+- `/Game/VoxelMapMVP/Data/VM_<Level>_<Scope>_<Size>cm`；
+- `/Game/VoxelMapMVP/Maps/<Level>_Voxelized_<Scope>_<Size>cm`；
 - `/Game/VoxelMapMVP/Materials/M_VoxelMapPreview_BaseColor`；
 - 一个可持久化的 HISM 预览 Actor；
 - `Saved/VoxelMapMVP` 下的 JSON 烘焙报告。
@@ -174,7 +205,7 @@ UnrealEditor-Cmd.exe <YourProject>.uproject \
   -Map=/Game/Maps/<InputLevel> \
   -OutputMap=/Game/VoxelMapMVP/Maps/<InputLevel>_Voxelized \
   -DataAsset=/Game/VoxelMapMVP/Data/VM_<InputLevel> \
-  -VoxelSize=25 \
+  -Preset=Standard -Scope=World \
   -Report=VoxelMapMVP/BakeReport.json \
   -unattended -nop4 -nosplash -AllowCommandletRendering
 ```
@@ -183,13 +214,19 @@ Commandlet 需要可执行渲染的 Client World、非 Null RHI，以及 Deferre
 （`r.ForwardShading=0`）。如果无法捕获 BaseColor，它会直接失败并停止，不会使用带光照的
 SceneColor 作为替代结果。
 
+`-Preset=Fine|Standard|Coarse` 对应 10/25/50 cm；显式传入 `-VoxelSize=<cm>`
+会覆盖预设。Bounds 范围还需要 `-BoundsMin=X,Y,Z -BoundsMax=X,Y,Z`。Commandlet
+使用 Selected 范围时，需要通过 `-ActorPaths=<PathA;PathB>` 传入分号分隔的对象路径。
+
 ### 当前限制
 
 - 只生成表面体素壳，不填充实心体积。
 - 暂不支持 Landscape、Skeletal Mesh、PCG、Foliage 或 Nanite 回退方案。
 - BaseColor 捕获目前只支持 Static Mesh、ISM 和 HISM。
 - 通用 World Partition 支持不在当前 MVP 范围内。
-- 暂无增量烘焙、Clipmap、稀疏流送或 Billboard Renderer。
+- 当前增量流程可复用未变化的数据/预览 Chunk；每次 Bake 仍会重新执行三角形体素化和六视角
+  BaseColor 捕获。
+- 暂无 Clipmap、运行时稀疏流送或 Billboard Renderer。
 - 通过安全上限约束单轴尺寸、三角形/体素候选测试次数和有效体素数量。
 
 ### 兼容性标识

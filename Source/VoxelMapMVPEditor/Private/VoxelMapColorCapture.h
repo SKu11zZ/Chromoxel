@@ -15,6 +15,8 @@ struct FVoxelMapColorCaptureSettings
     float CameraPaddingVoxels = 2.0f;
     float NearClipCm = 1.0f;
     float MinimumAcceptedCoverage = 0.95f;
+    TFunction<bool()> ShouldCancel;
+    TFunction<void(int32 CompletedViews, int32 TotalViews)> ReportViewProgress;
 };
 
 struct FVoxelMapColorCaptureResult
