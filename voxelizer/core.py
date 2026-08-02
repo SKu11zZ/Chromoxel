@@ -11,8 +11,10 @@ import json
 import math
 import re
 import struct
-from collections import Counter
+from bisect import bisect_left, bisect_right
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from itertools import product
 from typing import Iterable, Iterator, Optional
 
@@ -38,15 +40,121 @@ HELPER_SYMMETRY_TAG = "_textured_voxelizer_helper_symmetry"
 SAMPLING_DIAGNOSTICS_TAG = "_textured_voxelizer_sampling_diagnostics"
 MAX_GRID_SAMPLES = 1_500_000
 MAX_VOXELS = 250_000
+DEFAULT_CACHE_MEMORY_MB = 128
+DEFAULT_CHUNK_SIZE = 4096
 SYMMETRY_RELATIVE_TOLERANCE = 1.0e-6
 SYMMETRY_ABSOLUTE_FLOOR = 1.0e-7
-SYMMETRY_SCHEMA_VERSION = 1
+SYMMETRY_SCHEMA_VERSION = 2
 _AXIS_NAMES = ("X", "Y", "Z")
 _LAST_SAMPLING_DIAGNOSTICS: dict[int, dict[str, object]] = {}
+_SAMPLE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
+_SAMPLE_CACHE_BYTES = 0
 
 
 class VoxelizerError(RuntimeError):
     """A concise validation failure suitable for an operator report."""
+
+
+@dataclass(frozen=True)
+class SamplingProgress:
+    """One resumable sampling progress update."""
+
+    phase: str
+    completed: int
+    total: int
+    message: str
+
+    @property
+    def fraction(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.completed / self.total))
+
+
+def _setting_int(settings, name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(getattr(settings, name, default)))
+    except (AttributeError, TypeError, ValueError):
+        return max(minimum, int(default))
+
+
+def sample_budget(settings) -> int:
+    return _setting_int(settings, "sample_budget", MAX_GRID_SAMPLES, 1_000)
+
+
+def voxel_budget(settings) -> int:
+    return _setting_int(settings, "voxel_budget", MAX_VOXELS, 1_000)
+
+
+def sampling_chunk_size(settings) -> int:
+    return _setting_int(settings, "sampling_chunk_size", DEFAULT_CHUNK_SIZE, 128)
+
+
+def cache_budget_bytes(settings) -> int:
+    megabytes = _setting_int(
+        settings,
+        "cache_memory_mb",
+        DEFAULT_CACHE_MEMORY_MB,
+        16,
+    )
+    return megabytes * 1024 * 1024
+
+
+def clear_sampling_cache() -> None:
+    global _SAMPLE_CACHE_BYTES
+    _SAMPLE_CACHE.clear()
+    _SAMPLE_CACHE_BYTES = 0
+
+
+def sampling_cache_stats() -> dict[str, int]:
+    return {
+        "entries": len(_SAMPLE_CACHE),
+        "bytes": int(_SAMPLE_CACHE_BYTES),
+    }
+
+
+def _cache_get(key: str):
+    entry = _SAMPLE_CACHE.get(key)
+    if entry is not None:
+        _SAMPLE_CACHE.move_to_end(key)
+    return entry
+
+
+def _cache_put(
+    key: str,
+    centres: Iterable[Iterable[float]],
+    colours: Iterable[Iterable[float]],
+    used_image: bool,
+    diagnostics: dict[str, object],
+    settings,
+) -> None:
+    global _SAMPLE_CACHE_BYTES
+    centre_values = tuple(
+        tuple(float(component) for component in centre)
+        for centre in centres
+    )
+    colour_values = tuple(
+        tuple(float(component) for component in colour)
+        for colour in colours
+    )
+    estimated_bytes = len(centre_values) * 80
+    budget = cache_budget_bytes(settings)
+    if estimated_bytes > budget:
+        return
+    previous = _SAMPLE_CACHE.pop(key, None)
+    if previous is not None:
+        _SAMPLE_CACHE_BYTES -= int(previous["estimated_bytes"])
+    while _SAMPLE_CACHE and _SAMPLE_CACHE_BYTES + estimated_bytes > budget:
+        _old_key, old = _SAMPLE_CACHE.popitem(last=False)
+        _SAMPLE_CACHE_BYTES -= int(old["estimated_bytes"])
+    _SAMPLE_CACHE[key] = {
+        "centres": centre_values,
+        "colours": colour_values,
+        "used_image": bool(used_image),
+        "diagnostics": json.loads(json.dumps(diagnostics)),
+        "estimated_bytes": estimated_bytes,
+    }
+    _SAMPLE_CACHE_BYTES += estimated_bytes
 
 
 def _canonical_cycle(indices: Iterable[int]) -> tuple[int, ...]:
@@ -663,21 +771,80 @@ def evaluated_geometry_signature(
         return source_signature(mesh, 0.0)
 
 
+def _image_fingerprint(image: Optional[bpy.types.Image]) -> bytes:
+    """Return a bounded fingerprint that notices metadata and sampled pixel edits."""
+
+    if image is None:
+        return b"NO_IMAGE"
+    digest = hashlib.sha256()
+    digest.update(str(getattr(image, "name_full", image.name)).encode("utf-8"))
+    digest.update(str(getattr(image, "filepath_raw", "")).encode("utf-8"))
+    digest.update(str(getattr(image, "source", "")).encode("ascii", "ignore"))
+    digest.update(str(getattr(image.colorspace_settings, "name", "")).encode("utf-8"))
+    digest.update(b"\x01" if bool(getattr(image, "is_dirty", False)) else b"\x00")
+    try:
+        width, height = (int(value) for value in image.size)
+        digest.update(struct.pack("<II", width, height))
+        pixels = image.pixels
+        pixel_count = len(pixels)
+        digest.update(struct.pack("<Q", pixel_count))
+        if pixel_count:
+            stride = max(1, pixel_count // 512)
+            for index in range(0, pixel_count, stride):
+                digest.update(struct.pack("<f", float(pixels[index])))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        digest.update(b"UNREADABLE")
+    return digest.digest()
+
+
+def _colour_inputs_fingerprint(mesh: bpy.types.Mesh, settings) -> bytes:
+    digest = hashlib.sha256()
+    uv_name = str(getattr(settings, "uv_map", ""))
+    digest.update(uv_name.encode("utf-8"))
+    uv_layer = mesh.uv_layers.get(uv_name) if uv_name else None
+    if uv_layer is not None:
+        digest.update(struct.pack("<I", len(uv_layer.data)))
+        for datum in uv_layer.data:
+            digest.update(struct.pack("<2f", float(datum.uv.x), float(datum.uv.y)))
+    fallback = tuple(float(value) for value in getattr(
+        settings,
+        "fallback_color",
+        (0.18, 0.48, 0.8, 1.0),
+    ))
+    digest.update(struct.pack("<4f", *fallback))
+    digest.update(_image_fingerprint(getattr(settings, "base_color_image", None)))
+    return digest.digest()
+
+
 def preview_sampling_key(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
 ) -> str:
-    """Key geometry-affecting preview inputs; display gap is intentionally absent."""
+    """Key occupancy and colour inputs; display gap is intentionally absent."""
 
     digest = hashlib.sha256()
     with evaluated_local_mesh(context, source) as mesh:
         digest.update(source_signature(mesh, 0.0).encode("ascii"))
-        symmetry = reflection_symmetry_diagnostics(mesh)
+        digest.update(_colour_inputs_fingerprint(mesh, settings))
     digest.update(struct.pack("<d", float(settings.voxel_size)))
     digest.update(b"\x01" if settings.auto_watertight_copy else b"\x00")
     digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
-    digest.update(_symmetry_cache_fingerprint(symmetry))
+    grid_mode = str(getattr(settings, "grid_origin_mode", "BOUNDS"))
+    digest.update(grid_mode.encode("ascii", "ignore"))
+    grid_origin = tuple(float(value) for value in getattr(
+        settings,
+        "grid_origin",
+        (0.0, 0.0, 0.0),
+    ))
+    digest.update(struct.pack("<3d", *grid_origin))
+    digest.update(
+        b"\x01" if bool(getattr(settings, "use_sparse_candidates", True)) else b"\x00"
+    )
+    digest.update(struct.pack(
+        "<I",
+        _setting_int(settings, "sparse_grid_threshold", 50_000, 0),
+    ))
     return digest.hexdigest()
 
 
@@ -970,9 +1137,114 @@ def selected_source(context: bpy.types.Context) -> bpy.types.Object:
         raise VoxelizerError("Select one active Mesh object.")
     if is_tool_output(source):
         raise VoxelizerError("Select the original source Mesh, not a Voxelizer output.")
-    if len(context.selected_objects) != 1:
-        raise VoxelizerError("Select exactly one source Mesh object.")
     return source
+
+
+def source_objects(context: bpy.types.Context, settings) -> list[bpy.types.Object]:
+    """Resolve active, selected, or collection sources in deterministic order."""
+
+    if context.mode != "OBJECT":
+        raise VoxelizerError("Chromoxel requires Object Mode.")
+    scope = str(getattr(settings, "source_scope", "ACTIVE"))
+    if scope == "ACTIVE":
+        return [selected_source(context)]
+    if scope == "SELECTED":
+        candidates = tuple(context.selected_objects)
+    elif scope == "COLLECTION":
+        collection = getattr(settings, "source_collection", None)
+        if collection is None:
+            raise VoxelizerError("Choose a Source Collection.")
+        candidates = tuple(collection.all_objects)
+    else:
+        raise VoxelizerError(f'Unknown Source Scope "{scope}".')
+    include_hidden = bool(getattr(settings, "include_hidden", False))
+    sources = []
+    for candidate in candidates:
+        if candidate.type != "MESH" or is_tool_output(candidate):
+            continue
+        if not include_hidden and (
+            candidate.hide_viewport
+            or candidate.hide_get()
+        ):
+            continue
+        sources.append(candidate)
+    sources.sort(key=lambda item: item.name_full.casefold())
+    if not sources:
+        raise VoxelizerError(
+            "The selected scope contains no eligible Mesh objects."
+        )
+    return sources
+
+
+def estimate_sources(
+    context: bpy.types.Context,
+    sources: Iterable[bpy.types.Object],
+    settings,
+) -> dict[str, object]:
+    """Estimate candidate work and transient memory without building voxels."""
+
+    validate_settings(settings)
+    items = []
+    total_grid = 0
+    total_candidates = 0
+    total_bytes = 0
+    for source in sources:
+        with evaluated_local_mesh(context, source) as mesh:
+            if not mesh.vertices:
+                continue
+            bounds_min = Vector(tuple(
+                min(float(vertex.co[axis]) for vertex in mesh.vertices)
+                for axis in range(3)
+            ))
+            bounds_max = Vector(tuple(
+                max(float(vertex.co[axis]) for vertex in mesh.vertices)
+                for axis in range(3)
+            ))
+            symmetry = reflection_symmetry_diagnostics(mesh)
+            indices, coordinates, _report = _build_sampling_lattice(
+                bounds_min,
+                bounds_max,
+                float(settings.voxel_size),
+                symmetry,
+                settings,
+            )
+            counts = [len(axis) for axis in coordinates]
+            full_grid = counts[0] * counts[1] * counts[2]
+            surface_area = sum(float(polygon.area) for polygon in mesh.polygons)
+            sparse_estimate = min(
+                full_grid,
+                max(1, int(math.ceil(
+                    surface_area / max(float(settings.voxel_size) ** 2, 1.0e-12)
+                    * 8.0
+                ))),
+            )
+            estimated_bytes = sparse_estimate * 112
+            item = {
+                "name": source.name,
+                "axis_counts": counts,
+                "full_grid_samples": full_grid,
+                "estimated_candidates": sparse_estimate,
+                "estimated_memory_bytes": estimated_bytes,
+                "lattice_index_ranges": [
+                    (axis.start, axis.stop - 1) for axis in indices
+                ],
+            }
+            items.append(item)
+            total_grid += full_grid
+            total_candidates += sparse_estimate
+            total_bytes += estimated_bytes
+    return {
+        "sources": items,
+        "source_count": len(items),
+        "full_grid_samples": total_grid,
+        "estimated_candidates": total_candidates,
+        "estimated_memory_bytes": total_bytes,
+        "within_sample_budget": all(
+            int(item["estimated_candidates"]) <= sample_budget(settings)
+            for item in items
+        ),
+        "within_cache_budget": total_bytes <= cache_budget_bytes(settings),
+    }
 
 
 def validate_settings(settings) -> None:
@@ -1145,7 +1417,113 @@ _CUBE_FACES = (
 )
 
 
-def _sample_surface_voxels_from_meshes(
+def _build_sampling_lattice(
+    bounds_min: Vector,
+    bounds_max: Vector,
+    voxel_size: float,
+    source_symmetry: dict[str, object],
+    settings,
+) -> tuple[list[range], list[list[float]], dict[str, object]]:
+    """Build deterministic local-space axes for bounds or fixed-origin grids."""
+
+    shell_distance = voxel_size * math.sqrt(3.0) * 0.52
+    source_axes = source_symmetry["axes"]
+    assert isinstance(source_axes, dict)
+    proven_axes = set(str(axis) for axis in source_symmetry["proven_axes"])
+    grid_mode = str(getattr(settings, "grid_origin_mode", "BOUNDS"))
+    if grid_mode not in {"BOUNDS", "OBJECT", "CUSTOM"}:
+        grid_mode = "BOUNDS"
+    custom_origin = tuple(float(value) for value in getattr(
+        settings,
+        "grid_origin",
+        (0.0, 0.0, 0.0),
+    ))
+    lattice_indices: list[range] = []
+    lattice_coordinates: list[list[float]] = []
+    lattice_report: dict[str, object] = {}
+    for axis, axis_name in enumerate(_AXIS_NAMES):
+        if axis_name in proven_axes:
+            axis_diagnostics = source_axes[axis_name]
+            assert isinstance(axis_diagnostics, dict)
+            plane = float(axis_diagnostics["plane"])
+            radius = max(
+                plane - float(bounds_min[axis]),
+                float(bounds_max[axis]) - plane,
+            )
+            half_steps = max(0, int(math.ceil(radius / voxel_size)))
+            indices = range(-half_steps, half_steps + 1)
+            if len(indices) > sample_budget(settings):
+                raise VoxelizerError(
+                    f"The {axis_name} grid axis would require {len(indices):,} "
+                    "cells; increase Voxel Size."
+                )
+            coordinates = [plane + index * voxel_size for index in indices]
+            lattice_report[axis_name] = {
+                "mode": "PROVEN_PLANE_CENTERED",
+                "plane": plane,
+                "index_min": -half_steps,
+                "index_max": half_steps,
+                "count": len(coordinates),
+            }
+        elif grid_mode == "BOUNDS":
+            count = max(
+                1,
+                int(math.ceil(
+                    (float(bounds_max[axis]) - float(bounds_min[axis]))
+                    / voxel_size
+                )),
+            )
+            indices = range(count)
+            if len(indices) > sample_budget(settings):
+                raise VoxelizerError(
+                    f"The {axis_name} grid axis would require {len(indices):,} "
+                    "cells; increase Voxel Size."
+                )
+            coordinates = [
+                float(bounds_min[axis]) + (index + 0.5) * voxel_size
+                for index in indices
+            ]
+            lattice_report[axis_name] = {
+                "mode": "BOUNDS_HALF_CELL",
+                "bounds_min": float(bounds_min[axis]),
+                "index_min": 0,
+                "index_max": count - 1,
+                "count": len(coordinates),
+            }
+        else:
+            anchor = 0.0 if grid_mode == "OBJECT" else custom_origin[axis]
+            minimum = int(math.ceil(
+                (float(bounds_min[axis]) - shell_distance - anchor) / voxel_size
+            ))
+            maximum = int(math.floor(
+                (float(bounds_max[axis]) + shell_distance - anchor) / voxel_size
+            ))
+            if minimum > maximum:
+                middle = int(round(
+                    (((float(bounds_min[axis]) + float(bounds_max[axis])) * 0.5) - anchor)
+                    / voxel_size
+                ))
+                minimum = maximum = middle
+            indices = range(minimum, maximum + 1)
+            if len(indices) > sample_budget(settings):
+                raise VoxelizerError(
+                    f"The {axis_name} grid axis would require {len(indices):,} "
+                    "cells; increase Voxel Size."
+                )
+            coordinates = [anchor + index * voxel_size for index in indices]
+            lattice_report[axis_name] = {
+                "mode": f"{grid_mode}_FIXED_ORIGIN",
+                "origin": anchor,
+                "index_min": minimum,
+                "index_max": maximum,
+                "count": len(coordinates),
+            }
+        lattice_indices.append(indices)
+        lattice_coordinates.append(coordinates)
+    return lattice_indices, lattice_coordinates, lattice_report
+
+
+def _sample_surface_voxels_from_meshes_iter(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
@@ -1155,8 +1533,8 @@ def _sample_surface_voxels_from_meshes(
     sampling_object: bpy.types.Object,
     helper_rebuilt: bool,
     sampling_mesh: bpy.types.Mesh,
-) -> tuple[list[Vector], list[tuple[float, ...]], int, bool]:
-    """Sample while both evaluated source and sampling mesh leases are live."""
+) -> Iterator[SamplingProgress]:
+    """Incrementally sample while evaluated mesh leases remain live."""
 
     sampling_symmetry = reflection_symmetry_diagnostics(sampling_mesh)
     symmetry_preserved, missing_axes = _required_axes_preserved(
@@ -1191,61 +1569,135 @@ def _sample_surface_voxels_from_meshes(
         )
     )
     voxel_size = float(settings.voxel_size)
-    legacy_counts = [
-        max(1, int(math.ceil((bounds_max[axis] - bounds_min[axis]) / voxel_size)))
+    proven_axes = set(str(axis) for axis in source_symmetry["proven_axes"])
+    lattice_indices, lattice_coordinates, lattice_report = _build_sampling_lattice(
+        bounds_min,
+        bounds_max,
+        voxel_size,
+        source_symmetry,
+        settings,
+    )
+    counts = [len(coordinates) for coordinates in lattice_coordinates]
+    full_grid_count = counts[0] * counts[1] * counts[2]
+    canonical_offset_floors = [
+        max(0, min(counts[axis], -lattice_indices[axis].start))
+        if _AXIS_NAMES[axis] in proven_axes
+        else 0
         for axis in range(3)
     ]
-    source_axes = source_symmetry["axes"]
-    assert isinstance(source_axes, dict)
-    proven_axes = set(str(axis) for axis in source_symmetry["proven_axes"])
-    lattice_indices: list[range] = []
-    lattice_coordinates: list[list[float]] = []
-    lattice_report: dict[str, object] = {}
-    for axis, axis_name in enumerate(_AXIS_NAMES):
-        if axis_name in proven_axes:
-            axis_diagnostics = source_axes[axis_name]
-            assert isinstance(axis_diagnostics, dict)
-            plane = float(axis_diagnostics["plane"])
-            radius = max(
-                plane - float(bounds_min[axis]),
-                float(bounds_max[axis]) - plane,
-            )
-            half_steps = max(0, int(math.ceil(radius / voxel_size)))
-            indices = range(-half_steps, half_steps + 1)
-            coordinates = [
-                plane + index * voxel_size
-                for index in indices
-            ]
-            lattice_report[axis_name] = {
-                "mode": "PROVEN_PLANE_CENTERED",
-                "plane": plane,
-                "index_min": -half_steps,
-                "index_max": half_steps,
-                "count": len(coordinates),
-            }
-        else:
-            indices = range(legacy_counts[axis])
-            coordinates = [
-                bounds_min[axis] + (index + 0.5) * voxel_size
-                for index in indices
-            ]
-            lattice_report[axis_name] = {
-                "mode": "LEGACY_HALF_CELL",
-                "bounds_min": float(bounds_min[axis]),
-                "index_min": 0,
-                "index_max": legacy_counts[axis] - 1,
-                "count": len(coordinates),
-            }
-        lattice_indices.append(indices)
-        lattice_coordinates.append(coordinates)
-
-    counts = [len(coordinates) for coordinates in lattice_coordinates]
-    sample_count = counts[0] * counts[1] * counts[2]
-    if sample_count > MAX_GRID_SAMPLES:
+    canonical_counts = [
+        counts[axis] - canonical_offset_floors[axis]
+        for axis in range(3)
+    ]
+    canonical_grid_count = (
+        canonical_counts[0] * canonical_counts[1] * canonical_counts[2]
+    )
+    work_limit = sample_budget(settings)
+    if max(counts) > work_limit:
         raise VoxelizerError(
-            f"Grid would require {sample_count:,} samples; increase Voxel Size "
-            f"(limit {MAX_GRID_SAMPLES:,})."
+            f"One grid axis would require {max(counts):,} cells; increase "
+            f"Voxel Size (limit {work_limit:,})."
         )
+
+    shell_distance = voxel_size * math.sqrt(3.0) * 0.52
+    chunk_size = sampling_chunk_size(settings)
+    sparse_requested = bool(getattr(settings, "use_sparse_candidates", True))
+    sparse_threshold = _setting_int(
+        settings,
+        "sparse_grid_threshold",
+        50_000,
+        0,
+    )
+    use_sparse_candidates = (
+        sparse_requested and canonical_grid_count >= sparse_threshold
+    )
+    candidate_expansion_budget = _setting_int(
+        settings,
+        "candidate_expansion_budget",
+        work_limit * 32,
+        work_limit,
+    )
+    candidate_expansion_tests = 0
+    if use_sparse_candidates:
+        sampling_mesh.calc_loop_triangles()
+        triangles = tuple(sampling_mesh.loop_triangles)
+        candidate_set: set[tuple[int, int, int]] = set()
+        next_yield = chunk_size
+        for triangle_offset, triangle in enumerate(triangles):
+            triangle_coordinates = [
+                sampling_mesh.vertices[index].co
+                for index in triangle.vertices
+            ]
+            lower = []
+            upper = []
+            for axis in range(3):
+                minimum = min(float(point[axis]) for point in triangle_coordinates)
+                maximum = max(float(point[axis]) for point in triangle_coordinates)
+                coordinates = lattice_coordinates[axis]
+                lower.append(bisect_left(coordinates, minimum - shell_distance))
+                upper.append(bisect_right(coordinates, maximum + shell_distance))
+            for axis in range(3):
+                lower[axis] = max(lower[axis], canonical_offset_floors[axis])
+            expansion_count = (
+                (upper[0] - lower[0])
+                * (upper[1] - lower[1])
+                * (upper[2] - lower[2])
+            )
+            candidate_expansion_tests += expansion_count
+            if candidate_expansion_tests > candidate_expansion_budget:
+                raise VoxelizerError(
+                    "Triangle candidate expansion exceeded the configured "
+                    f"budget ({candidate_expansion_budget:,}); increase "
+                    "Voxel Size or Candidate Expansion Budget."
+                )
+            # itertools.product plus set.update performs the hot insertion loop
+            # in C while preserving the exact expanded-triangle candidate set.
+            candidate_set.update(product(
+                range(lower[0], upper[0]),
+                range(lower[1], upper[1]),
+                range(lower[2], upper[2]),
+            ))
+            if len(candidate_set) > work_limit:
+                raise VoxelizerError(
+                    f"Sparse surface candidates exceeded {work_limit:,}; "
+                    "increase Voxel Size or the Sample Budget."
+                )
+            if candidate_expansion_tests >= next_yield:
+                yield SamplingProgress(
+                    "CANDIDATES",
+                    triangle_offset + 1,
+                    max(1, len(triangles)),
+                    f"Building sparse candidates for {source.name}",
+                )
+                next_yield = (
+                    (candidate_expansion_tests // chunk_size) + 1
+                ) * chunk_size
+        candidate_offsets = sorted(
+            candidate_set,
+            key=lambda key: (key[2], key[1], key[0]),
+        )
+    else:
+        if canonical_grid_count > work_limit:
+            raise VoxelizerError(
+                f"Grid would require {canonical_grid_count:,} canonical samples; increase "
+                f"Voxel Size (limit {work_limit:,})."
+            )
+        candidate_offsets = [
+            (x_offset, y_offset, z_offset)
+            for z_offset in range(canonical_offset_floors[2], counts[2])
+            for y_offset in range(canonical_offset_floors[1], counts[1])
+            for x_offset in range(canonical_offset_floors[0], counts[0])
+        ]
+        candidate_expansion_tests = len(candidate_offsets)
+    candidate_count = len(candidate_offsets)
+    if not candidate_offsets:
+        raise VoxelizerError("No sampling candidates were produced.")
+    yield SamplingProgress(
+        "CANDIDATES",
+        candidate_count,
+        candidate_count,
+        f"Prepared {candidate_count:,} candidates for {source.name}",
+    )
 
     sampler = ColourSampler(
         source_mesh,
@@ -1253,66 +1705,79 @@ def _sample_surface_voxels_from_meshes(
         settings.base_color_image,
         settings.fallback_color,
     )
-    shell_distance = voxel_size * math.sqrt(3.0) * 0.52
-    centres = []
-    colours = []
+    centres: list[Vector] = []
+    colours: list[tuple[float, ...]] = []
     occupied_seed_count = 0
     orbit_added_count = 0
+    maximum_voxels = voxel_budget(settings)
     if not proven_axes:
-        for z_index in range(counts[2]):
-            z = bounds_min.z + (z_index + 0.5) * voxel_size
-            for y_index in range(counts[1]):
-                y = bounds_min.y + (y_index + 0.5) * voxel_size
-                for x_index in range(counts[0]):
-                    centre = Vector(
-                        (
-                            bounds_min.x + (x_index + 0.5) * voxel_size,
-                            y,
-                            z,
-                        )
-                    )
-                    nearest = bvh.find_nearest(centre, shell_distance)
-                    if nearest is None or nearest[0] is None or nearest[3] is None:
-                        continue
-                    location, _normal, polygon_index, distance = nearest
-                    if distance > shell_distance:
-                        continue
+        for candidate_number, (x_offset, y_offset, z_offset) in enumerate(
+            candidate_offsets,
+            start=1,
+        ):
+            centre = Vector((
+                lattice_coordinates[0][x_offset],
+                lattice_coordinates[1][y_offset],
+                lattice_coordinates[2][z_offset],
+            ))
+            nearest = bvh.find_nearest(centre, shell_distance)
+            if nearest is not None and nearest[0] is not None and nearest[3] is not None:
+                location, _normal, _polygon_index, distance = nearest
+                if distance <= shell_distance:
                     centres.append(centre)
                     colours.append(sampler.sample_nearest_original(location))
                     occupied_seed_count += 1
-                    if len(centres) > MAX_VOXELS:
+                    if len(centres) > maximum_voxels:
                         raise VoxelizerError(
-                            f"Surface exceeded {MAX_VOXELS:,} voxels; increase Voxel Size."
+                            f"Surface exceeded {maximum_voxels:,} voxels; "
+                            "increase Voxel Size or the Voxel Budget."
                         )
+            if candidate_number % chunk_size == 0:
+                yield SamplingProgress(
+                    "OCCUPANCY",
+                    candidate_number,
+                    candidate_count,
+                    f"Sampling {source.name}",
+                )
     else:
         selected_indices: set[tuple[int, int, int]] = set()
-        for z_offset, z_index in enumerate(lattice_indices[2]):
-            z = lattice_coordinates[2][z_offset]
-            for y_offset, y_index in enumerate(lattice_indices[1]):
-                y = lattice_coordinates[1][y_offset]
-                for x_offset, x_index in enumerate(lattice_indices[0]):
-                    x = lattice_coordinates[0][x_offset]
-                    centre = Vector((x, y, z))
-                    nearest = bvh.find_nearest(centre, shell_distance)
-                    if nearest is None or nearest[0] is None or nearest[3] is None:
-                        continue
-                    if nearest[3] > shell_distance:
-                        continue
+        for candidate_number, (x_offset, y_offset, z_offset) in enumerate(
+            candidate_offsets,
+            start=1,
+        ):
+            centre = Vector((
+                lattice_coordinates[0][x_offset],
+                lattice_coordinates[1][y_offset],
+                lattice_coordinates[2][z_offset],
+            ))
+            nearest = bvh.find_nearest(centre, shell_distance)
+            if nearest is not None and nearest[0] is not None and nearest[3] is not None:
+                if nearest[3] <= shell_distance:
                     occupied_seed_count += 1
-                    key = (x_index, y_index, z_index)
+                    key = (
+                        lattice_indices[0][x_offset],
+                        lattice_indices[1][y_offset],
+                        lattice_indices[2][z_offset],
+                    )
                     axis_variants = [
                         (value, -value)
                         if _AXIS_NAMES[axis] in proven_axes and value != 0
                         else (value,)
                         for axis, value in enumerate(key)
                     ]
-                    before = len(selected_indices)
                     selected_indices.update(product(*axis_variants))
-                    orbit_added_count += len(selected_indices) - before
-                    if len(selected_indices) > MAX_VOXELS:
+                    if len(selected_indices) > maximum_voxels:
                         raise VoxelizerError(
-                            f"Surface exceeded {MAX_VOXELS:,} voxels; increase Voxel Size."
+                            f"Surface exceeded {maximum_voxels:,} voxels; "
+                            "increase Voxel Size or the Voxel Budget."
                         )
+            if candidate_number % chunk_size == 0:
+                yield SamplingProgress(
+                    "OCCUPANCY",
+                    candidate_number,
+                    candidate_count,
+                    f"Sampling symmetric occupancy for {source.name}",
+                )
 
         coordinate_lookup = [
             {
@@ -1321,9 +1786,13 @@ def _sample_surface_voxels_from_meshes(
             }
             for axis in range(3)
         ]
-        for x_index, y_index, z_index in sorted(
+        ordered_indices = sorted(
             selected_indices,
             key=lambda key: (key[2], key[1], key[0]),
+        )
+        for colour_number, (x_index, y_index, z_index) in enumerate(
+            ordered_indices,
+            start=1,
         ):
             centre = Vector(
                 (
@@ -1339,10 +1808,17 @@ def _sample_surface_voxels_from_meshes(
                 )
             centres.append(centre)
             colours.append(sampler.sample_nearest_original(nearest[0]))
-        orbit_added_count = len(centres) - occupied_seed_count
+            if colour_number % chunk_size == 0:
+                yield SamplingProgress(
+                    "COLOUR",
+                    colour_number,
+                    len(ordered_indices),
+                    f"Sampling colours for {source.name}",
+                )
+        orbit_added_count = max(0, len(centres) - occupied_seed_count)
     if not centres:
         raise VoxelizerError("No surface voxels were produced; decrease Voxel Size.")
-    _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = {
+    diagnostics = {
         "schema": SYMMETRY_SCHEMA_VERSION,
         "source_symmetry": source_symmetry,
         "sampling_symmetry": sampling_symmetry,
@@ -1352,7 +1828,25 @@ def _sample_surface_voxels_from_meshes(
         "voxel_size": voxel_size,
         "shell_distance": shell_distance,
         "lattice": lattice_report,
-        "candidate_count": sample_count,
+        "grid_origin_mode": str(getattr(settings, "grid_origin_mode", "BOUNDS")),
+        "candidate_strategy": (
+            "TRIANGLE_AABB_SPARSE"
+            if use_sparse_candidates
+            else "FULL_GRID_DISABLED"
+            if not sparse_requested
+            else "FULL_GRID_SMALL_VOLUME"
+        ),
+        "full_grid_count": full_grid_count,
+        "canonical_grid_count": canonical_grid_count,
+        "candidate_count": candidate_count,
+        "candidate_expansion_tests": candidate_expansion_tests,
+        "candidate_reduction_ratio": (
+            0.0
+            if full_grid_count <= 0
+            else 1.0 - (candidate_count / full_grid_count)
+        ),
+        "chunk_size": chunk_size,
+        "cache_hit": False,
         "occupied_seed_count": occupied_seed_count,
         "orbit_added_count": orbit_added_count,
         "selected_count": len(centres),
@@ -1362,17 +1856,56 @@ def _sample_surface_voxels_from_meshes(
             else "LEGACY_NO_CLOSURE"
         ),
     }
+    _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = diagnostics
+    yield SamplingProgress(
+        "FINALIZE",
+        len(centres),
+        len(centres),
+        f"Finalized {len(centres):,} voxels for {source.name}",
+    )
     return centres, colours, len(centres), sampler.uses_image
 
 
-def sample_surface_voxels(
+def _sampling_cache_key(source: bpy.types.Object, sampling_key: str) -> str:
+    return f"{source.as_pointer()}:{sampling_key}"
+
+
+def sample_surface_voxels_iter(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
-) -> tuple[list[Vector], list[tuple[float, ...]], int, bool]:
-    """Sample evaluated object-local geometry with bounded mesh ownership."""
+    *,
+    cache_key: Optional[str] = None,
+    use_cache: bool = True,
+) -> Iterator[SamplingProgress]:
+    """Incrementally sample one source and return the result on completion.
+
+    Consumers advance this generator between UI events.  The final voxel tuple is
+    carried by ``StopIteration.value`` so the same implementation serves modal
+    operators and the synchronous/background API.
+    """
 
     validate_settings(settings)
+    sampling_key = cache_key or preview_sampling_key(context, source, settings)
+    cache_id = _sampling_cache_key(source, sampling_key)
+    if use_cache:
+        entry = _cache_get(cache_id)
+        if entry is not None:
+            diagnostics = json.loads(json.dumps(entry["diagnostics"]))
+            diagnostics["cache_hit"] = True
+            diagnostics["cache_entries"] = len(_SAMPLE_CACHE)
+            diagnostics["cache_bytes"] = int(_SAMPLE_CACHE_BYTES)
+            _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = diagnostics
+            centres = [Vector(value) for value in entry["centres"]]
+            colours = [tuple(value) for value in entry["colours"]]
+            yield SamplingProgress(
+                "CACHE",
+                1,
+                1,
+                f"Reused {len(centres):,} cached voxels for {source.name}",
+            )
+            return centres, colours, len(centres), bool(entry["used_image"])
+
     with evaluated_local_mesh(context, source) as source_mesh:
         source_diagnostics = mesh_diagnostics(source_mesh)
         source_symmetry = reflection_symmetry_diagnostics(source_mesh)
@@ -1385,7 +1918,7 @@ def sample_surface_voxels(
             source_symmetry=source_symmetry,
         )
         if sampling_object is source:
-            return _sample_surface_voxels_from_meshes(
+            result = yield from _sample_surface_voxels_from_meshes_iter(
                 context,
                 source,
                 settings,
@@ -1395,37 +1928,88 @@ def sample_surface_voxels(
                 helper_rebuilt=helper_rebuilt,
                 sampling_mesh=source_mesh,
             )
-        with evaluated_local_mesh(context, sampling_object) as sampling_mesh:
-            return _sample_surface_voxels_from_meshes(
-                context,
-                source,
-                settings,
-                source_mesh=source_mesh,
-                source_symmetry=source_symmetry,
-                sampling_object=sampling_object,
-                helper_rebuilt=helper_rebuilt,
-                sampling_mesh=sampling_mesh,
-            )
+        else:
+            with evaluated_local_mesh(context, sampling_object) as sampling_mesh:
+                result = yield from _sample_surface_voxels_from_meshes_iter(
+                    context,
+                    source,
+                    settings,
+                    source_mesh=source_mesh,
+                    source_symmetry=source_symmetry,
+                    sampling_object=sampling_object,
+                    helper_rebuilt=helper_rebuilt,
+                    sampling_mesh=sampling_mesh,
+                )
+
+    centres, colours, count, used_image = result
+    diagnostics = dict(_LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()])
+    diagnostics["cache_hit"] = False
+    _cache_put(
+        cache_id,
+        centres,
+        colours,
+        used_image,
+        diagnostics,
+        settings,
+    )
+    diagnostics["cache_entries"] = len(_SAMPLE_CACHE)
+    diagnostics["cache_bytes"] = int(_SAMPLE_CACHE_BYTES)
+    _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = diagnostics
+    return centres, colours, count, used_image
 
 
-def build_voxel_mesh(
+def _consume_progress_generator(generator, progress_callback=None):
+    while True:
+        try:
+            progress = next(generator)
+        except StopIteration as stop:
+            return stop.value
+        if progress_callback is not None:
+            progress_callback(progress)
+
+
+def sample_surface_voxels(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+    *,
+    cache_key: Optional[str] = None,
+    use_cache: bool = True,
+    progress_callback=None,
+) -> tuple[list[Vector], list[tuple[float, ...]], int, bool]:
+    """Synchronous sampling API used by scripts and background tests."""
+
+    return _consume_progress_generator(
+        sample_surface_voxels_iter(
+            context,
+            source,
+            settings,
+            cache_key=cache_key,
+            use_cache=use_cache,
+        ),
+        progress_callback,
+    )
+
+
+def build_voxel_mesh_iter(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
     mesh_name: str,
-) -> tuple[bpy.types.Mesh, int, bool]:
-    """Build the legacy realized cube mesh used by Bake."""
+    *,
+    cache_key: Optional[str] = None,
+) -> Iterator[SamplingProgress]:
+    """Incrementally build the realized cube mesh used by Bake."""
 
-    centres, colours, count, used_image = sample_surface_voxels(
-        context,
-        source,
-        settings,
+    centres, colours, count, used_image = yield from sample_surface_voxels_iter(
+        context, source, settings, cache_key=cache_key
     )
     voxel_size = float(settings.voxel_size)
     half_extent = (voxel_size - float(settings.cube_gap)) * 0.5
     result_vertices = []
     result_faces = []
-    for centre in centres:
+    chunk_size = sampling_chunk_size(settings)
+    for voxel_number, centre in enumerate(centres, start=1):
         first_vertex = len(result_vertices)
         result_vertices.extend(
             (
@@ -1439,8 +2023,16 @@ def build_voxel_mesh(
             tuple(first_vertex + index for index in face)
             for face in _CUBE_FACES
         )
+        if voxel_number % chunk_size == 0:
+            yield SamplingProgress(
+                "BAKE_GEOMETRY",
+                voxel_number,
+                count,
+                f"Building cube geometry for {source.name}",
+            )
 
     result = bpy.data.meshes.new(mesh_name)
+    completed = False
     try:
         result.from_pydata(result_vertices, (), result_faces)
         result.update()
@@ -1449,16 +2041,48 @@ def build_voxel_mesh(
             type="FLOAT_COLOR",
             domain="CORNER",
         )
-        for polygon in result.polygons:
+        polygon_count = len(result.polygons)
+        for polygon_number, polygon in enumerate(result.polygons, start=1):
             colour = colours[polygon.index // 6]
             for loop_index in polygon.loop_indices:
                 attribute.data[loop_index].color = colour
+            if polygon_number % (chunk_size * 6) == 0:
+                yield SamplingProgress(
+                    "BAKE_COLOUR",
+                    polygon_number,
+                    polygon_count,
+                    f"Writing voxel colours for {source.name}",
+                )
         result.materials.append(ensure_colour_material())
         result.update()
-    except Exception:
-        bpy.data.meshes.remove(result)
-        raise
+        completed = True
+    finally:
+        if not completed and result.name in bpy.data.meshes:
+            bpy.data.meshes.remove(result)
     return result, count, used_image
+
+
+def build_voxel_mesh(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+    mesh_name: str,
+    *,
+    cache_key: Optional[str] = None,
+    progress_callback=None,
+) -> tuple[bpy.types.Mesh, int, bool]:
+    """Synchronous realized-mesh API used by scripts and background tests."""
+
+    return _consume_progress_generator(
+        build_voxel_mesh_iter(
+            context,
+            source,
+            settings,
+            mesh_name,
+            cache_key=cache_key,
+        ),
+        progress_callback,
+    )
 
 
 def tag_output(
@@ -1489,6 +2113,7 @@ def link_output(
 
 
 def clear_tagged_outputs() -> int:
+    clear_sampling_cache()
     outputs = [output for output in bpy.data.objects if is_tool_output(output)]
     for output in outputs:
         mesh = output.data if output.type == "MESH" else None

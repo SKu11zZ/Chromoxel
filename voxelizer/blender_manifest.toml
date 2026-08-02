@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "textured_voxelizer_mvp"
-version = "0.3.2"
+version = "0.5.0"
 name = "Chromoxel"
 tagline = "Texture-aware, symmetry-safe voxelization"
 maintainer = "SKu11zZ"

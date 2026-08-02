@@ -298,16 +298,22 @@ def _carrier_is_valid(output: bpy.types.Object) -> bool:
 
 def clear_runtime_cache() -> None:
     _RUNTIME_CACHE.clear()
+    try:
+        from . import core
+
+        core.clear_sampling_cache()
+    except (AttributeError, ImportError):
+        pass
 
 
-def refresh_preview(
+def refresh_preview_iter(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
     *,
     force_rebuild: bool,
-) -> PreviewUpdate:
-    """Synchronize one object-local preview, optionally forcing CPU resampling."""
+):
+    """Incrementally synchronize one object-local preview."""
 
     from . import core
 
@@ -366,10 +372,11 @@ def refresh_preview(
             elapsed_seconds=time.perf_counter() - started,
         )
 
-    centres, colours, point_count, used_image = core.sample_surface_voxels(
+    centres, colours, point_count, used_image = yield from core.sample_surface_voxels_iter(
         context,
         source,
         settings,
+        cache_key=cache_key,
     )
     material = core.ensure_colour_material()
     output = existing
@@ -426,3 +433,28 @@ def refresh_preview(
         cube_size=cube_size,
         elapsed_seconds=time.perf_counter() - started,
     )
+
+
+def refresh_preview(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+    *,
+    force_rebuild: bool,
+    progress_callback=None,
+) -> PreviewUpdate:
+    """Synchronous preview API used by Live, scripts, and background tests."""
+
+    generator = refresh_preview_iter(
+        context,
+        source,
+        settings,
+        force_rebuild=force_rebuild,
+    )
+    while True:
+        try:
+            progress = next(generator)
+        except StopIteration as stop:
+            return stop.value
+        if progress_callback is not None:
+            progress_callback(progress)

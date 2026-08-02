@@ -4,7 +4,7 @@
 
 **面向 Blender、能够保留贴图细节与模型对称性的体素化工具。**
 
-**Version / 版本：** 0.3.2 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1
+**Version / 版本：** 0.5.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -36,8 +36,15 @@ provides a lightweight Geometry Nodes preview for iteration and a realized
 - Optionally builds a private watertight repair copy without modifying the
   source object.
 - Uses point-domain data and cube instancing for responsive previews.
+- Processes the active mesh, all selected meshes, or a chosen collection.
+- Provides Coarse/Medium/Fine presets and repeatable Object/Custom grid origins.
+- Estimates candidate work and memory before fine-resolution jobs.
+- Reports progress and supports cancellation between bounded task chunks.
+- Reuses a bounded sampling cache between Preview and Bake.
+- Uses adaptive sparse surface candidates and samples only a proved symmetry
+  fundamental domain before exact orbit closure.
 - Supports debounced live updates for transforms, geometry, voxel size, and
-  cube gap changes.
+  cube gap changes on the active source.
 - Produces realized cube geometry with a `voxel_color` attribute when baked.
 - Cleans up only data created and tagged by Chromoxel.
 
@@ -45,7 +52,7 @@ provides a lightweight Geometry Nodes preview for iteration and a realized
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.3.2-extension.zip` from the [`dist`](dist)
+1. Download `chromoxel-blender-0.5.0-extension.zip` from the [`dist`](dist)
    directory or the latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the downloaded ZIP.
@@ -54,19 +61,21 @@ provides a lightweight Geometry Nodes preview for iteration and a realized
 
 #### Legacy add-on package
 
-Use `chromoxel-blender-0.3.2.zip` when installing through a workflow that
+Use `chromoxel-blender-0.5.0.zip` when installing through a workflow that
 expects the traditional top-level `voxelizer` folder.
 
 ### Quick start
 
 1. Create or import a textured Mesh and select it.
 2. Open **3D Viewport > Sidebar (`N`) > Voxelizer**.
-3. Keep **Auto Watertight Copy** enabled if the source is not closed manifold.
-4. Set **Voxel Size** and **Cube Gap**.
-5. Select the UV map and BaseColor image, or use the fallback colour.
-6. Click **Add / Refresh Preview**.
-7. Enable **Start Live** when you want changes to update automatically.
-8. Click **Bake to Mesh** to create independent, realized voxel geometry.
+3. Choose **Active**, **Selected**, or **Collection** source scope.
+4. Apply **Coarse**, **Medium**, or **Fine**, or enter a custom **Voxel Size**.
+5. Keep **Object Origin** for a stable local grid, or choose a custom origin.
+6. Keep **Auto Watertight Copy** enabled if a source is not closed manifold.
+7. Select the UV map and BaseColor image, or use the fallback colour.
+8. Click **Estimate Work**, then **Add / Update Chromoxel**.
+9. Use **Start Live** for active-source iteration, or **Bake to Mesh** for
+   independent, realized voxel geometry.
 
 ### Preview and bake
 
@@ -74,6 +83,12 @@ expects the traditional top-level `voxelizer` folder.
 | --- | --- | --- |
 | Preview | Interactive look development | Point carrier with Geometry Nodes cube instances |
 | Bake to Mesh | Cycles rendering, export, and final editing | Realized cubes with a corner-domain colour attribute |
+
+The preview object carries the editable Geometry Nodes modifier; original
+source meshes and modifiers are not rewritten. Preview and Bake share cached
+occupancy and colour samples when all geometry, grid, repair, UV, image, and
+fallback-colour inputs still match. **Clear Sampling Cache** frees that memory
+without deleting outputs.
 
 For the current release, use **Bake to Mesh** for final Cycles renders because
 colour propagation through unrealized point instances can depend on the
@@ -91,9 +106,10 @@ intentionally asymmetric source is left asymmetric.
 - CPU BVH/grid sampling; GPU voxelization is not implemented yet.
 - Surface shell only; it does not generate a filled solid volume.
 - One UV map and one BaseColor image per operation.
-- No UDIM, procedural shader baking, sparse bricks, clipmaps, streaming chunks,
-  or automatic LOD hierarchy yet.
-- Sampling is capped at 1,500,000 grid cells and 250,000 active voxels.
+- No UDIM, procedural shader baking, sparse bricks, clipmaps, or automatic LOD
+  hierarchy yet.
+- Default per-source limits are 1,500,000 candidates and 250,000 active
+  voxels; Advanced settings can change limits, chunk size, and cache budget.
 
 ### Compatibility identity
 
@@ -114,6 +130,8 @@ Run the portable smoke test with Blender 5.1:
 
 ```powershell
 blender --background --factory-startup --python tests/release_smoke.py
+blender --background --factory-startup --python tests/blender_v050_regression.py
+blender --background --factory-startup --python tests/blender_v050_performance.py
 ```
 
 See [VALIDATION.md](VALIDATION.md) for the verified Blender version and release
@@ -139,6 +157,12 @@ Chromoxel 可将选中的模型转换为带颜色的表面体素壳。插件提�
 - 支持闭合模型、Blender 默认猴头、曲面、锐利棱角和凹 NGON 棱柱。
 - 对非流形模型可创建内部水密修复副本，不修改源对象。
 - 使用点域数据和立方体实例，保持预览响应速度。
+- 支持处理当前活动对象、全部选中对象或指定集合。
+- 提供粗/中/细三档预设，以及可重复的对象原点/自定义原点网格。
+- 可在细粒度任务前预估候选工作量和内存。
+- 长任务按有界 Chunk 报告进度，并可在 Chunk 之间取消。
+- 预览与烘焙共享受内存上限约束的采样缓存。
+- 使用自适应稀疏表面候选；对已证明对称的模型只采样基本域，再精确闭合镜像轨道。
 - 支持变换、几何体、体素尺寸和立方体间隙的防抖实时更新。
 - 烘焙后生成实际立方体几何体，并写入 `voxel_color` 颜色属性。
 - 清理操作只删除由 Chromoxel 创建并标记的数据。
@@ -148,7 +172,7 @@ Chromoxel 可将选中的模型转换为带颜色的表面体素壳。插件提�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 目录或最新 GitHub Release 下载
-   `chromoxel-blender-0.3.2-extension.zip`。
+   `chromoxel-blender-0.5.0-extension.zip`。
 2. 在 Blender 5.1 中打开 **编辑（Edit）> 偏好设置（Preferences）> 插件（Add-ons）**。
 3. 选择 **从磁盘安装（Install from Disk）**，并选中下载的 ZIP。
 4. 启用 **Chromoxel**。
@@ -157,18 +181,19 @@ Chromoxel 可将选中的模型转换为带颜色的表面体素壳。插件提�
 #### 传统插件安装包
 
 如果安装流程要求 ZIP 内包含传统的顶层 `voxelizer` 文件夹，请使用
-`chromoxel-blender-0.3.2.zip`。
+`chromoxel-blender-0.5.0.zip`。
 
 ### 快速开始
 
 1. 创建或导入一个带贴图的 Mesh，并选中该对象。
 2. 打开 **3D 视图 > 侧栏（`N`）> Voxelizer**。
-3. 如果源模型不是闭合流形，保持 **Auto Watertight Copy** 启用。
-4. 设置 **Voxel Size** 和 **Cube Gap**。
-5. 指定 UV Map 与 BaseColor 图片，或使用备用颜色。
-6. 点击 **Add / Refresh Preview** 创建或刷新预览。
-7. 需要自动跟随修改时，点击 **Start Live**。
-8. 点击 **Bake to Mesh**，生成独立且已经实体化的体素网格。
+3. 选择 **Active**、**Selected** 或 **Collection** 源范围。
+4. 使用 **Coarse / Medium / Fine** 预设，或手动输入 **Voxel Size**。
+5. 保持 **Object Origin** 获得稳定的局部网格，或指定自定义原点。
+6. 如果源模型不是闭合流形，保持 **Auto Watertight Copy** 启用。
+7. 指定 UV Map 与 BaseColor 图片，或使用备用颜色。
+8. 先点 **Estimate Work**，再点 **Add / Update Chromoxel**。
+9. 活动对象迭代可使用 **Start Live**；最终结果使用 **Bake to Mesh**。
 
 ### 预览与烘焙
 
@@ -176,6 +201,10 @@ Chromoxel 可将选中的模型转换为带颜色的表面体素壳。插件提�
 | --- | --- | --- |
 | Preview | 交互式外观调整 | 使用 Geometry Nodes 立方体实例的点载体 |
 | Bake to Mesh | Cycles 渲染、导出和最终编辑 | 带角点域颜色属性的实体立方体网格 |
+
+Geometry Nodes 修改器位于预览对象上，原始 Mesh 及其修改器不会被重写。当几何、网格、修复、
+UV、图片和备用颜色输入完全一致时，Preview 与 Bake 会复用同一份占用及颜色缓存。
+**Clear Sampling Cache** 只释放缓存，不删除已有输出。
 
 当前版本进行最终 Cycles 渲染时，建议使用 **Bake to Mesh**。未实体化点实例的颜色传递
 可能因渲染器和 Blender 版本而有所不同。
@@ -191,8 +220,9 @@ Chromoxel 使用镜像顶点、边和多边形边界，分别验证局部 X、Y�
 - 当前采用 CPU BVH/网格采样，尚未实现 GPU 体素化。
 - 只生成表面体素壳，不生成填满内部的实心体积。
 - 每次操作支持一个 UV Map 和一张 BaseColor 图片。
-- 暂不支持 UDIM、程序化 Shader 烘焙、稀疏 Brick、Clipmap、流式 Chunk 或自动 LOD 层级。
-- 采样上限为 1,500,000 个网格单元和 250,000 个有效体素。
+- 暂不支持 UDIM、程序化 Shader 烘焙、稀疏 Brick、Clipmap 或自动 LOD 层级。
+- 默认每个源对象最多处理 1,500,000 个候选单元并输出 250,000 个有效体素；可在
+  Advanced 中调整上限、任务 Chunk 和缓存预算。
 
 ### 兼容性标识
 
@@ -212,6 +242,8 @@ python tools/build_packages.py
 
 ```powershell
 blender --background --factory-startup --python tests/release_smoke.py
+blender --background --factory-startup --python tests/blender_v050_regression.py
+blender --background --factory-startup --python tests/blender_v050_performance.py
 ```
 
 已验证的 Blender 版本和发布检查记录见 [VALIDATION.md](VALIDATION.md)。

@@ -9,7 +9,7 @@ import stat
 import zipfile
 
 
-VERSION = "0.3.2"
+VERSION = "0.5.0"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = stat.S_IFREG | 0o644
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +73,7 @@ def main() -> int:
     init_py = (SOURCE_ROOT / "__init__.py").read_text(encoding="utf-8")
     if f'version = "{VERSION}"' not in manifest:
         raise RuntimeError("manifest version does not match package version")
-    if '"version": (0, 3, 2)' not in init_py:
+    if '"version": (0, 5, 0)' not in init_py:
         raise RuntimeError("bl_info version does not match package version")
 
     DIST_ROOT.mkdir(parents=True, exist_ok=True)

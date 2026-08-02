@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 - 2026-08-02
+
+- Added a modifier-style, non-destructive Geometry Nodes preview workflow with
+  Active, Selected, and Collection source scopes.
+- Added Coarse, Medium, and Fine size presets, repeatable Object/Custom grid
+  origins, work and memory estimates, and an advanced limits panel.
+- Added modal progress and bounded cancellation checks for Preview and Bake.
+- Added exact sparse triangle-AABB candidates with an adaptive small-grid
+  fallback and symmetry fundamental-domain sampling.
+- Added a bounded LRU sampling cache shared by Preview and Bake; colour inputs
+  and image edits are included in cache invalidation.
+- Added multi-model, concave NGON, stock Suzanne repair, strict symmetry,
+  sparse/full equivalence, cache, and performance regression coverage.
+
 ## 0.3.2 - 2026-08-01
 
 - Renamed the user-facing product to Chromoxel while preserving legacy

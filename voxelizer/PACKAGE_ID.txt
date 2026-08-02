@@ -1,3 +1,3 @@
 org.openai.textured_voxelizer_mvp
-version=0.3.2
+version=0.5.0
 blender=5.1

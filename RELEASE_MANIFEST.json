@@ -1,33 +1,33 @@
 {
   "artifacts": [
     {
-      "bytes": 26602,
-      "file": "dist/chromoxel-blender-0.3.2.zip",
+      "bytes": 35292,
+      "file": "dist/chromoxel-blender-0.5.0.zip",
       "members": [
         {
-          "bytes": 11558,
+          "bytes": 11357,
           "name": "voxelizer/LICENSE.md",
-          "sha256": "1EB85FC97224598DAD1852B5D6483BBCF0AA8608790DCC657A5A2A761AE9C8C6"
+          "sha256": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4"
         },
         {
           "bytes": 60,
           "name": "voxelizer/PACKAGE_ID.txt",
-          "sha256": "F44EF1B0C714CB196BBEEF94E51BE4CF7BF681932E63253C14B0A3BD7A3C8B10"
+          "sha256": "F80AD506E0E00B42178637238182C99A53AFF509B94E1B6A5FCAE8E791921399"
         },
         {
-          "bytes": 12409,
+          "bytes": 30809,
           "name": "voxelizer/__init__.py",
-          "sha256": "3C4ABBBCD2F0A2D1AD2FC4E4EC1B7F4218A08DD6C9B3DF48FA59208F1163CA38"
+          "sha256": "7BE3007662B737AA8B0DDD4C95D7DBC31135970126AFD90E115E795E549E659F"
         },
         {
           "bytes": 296,
           "name": "voxelizer/blender_manifest.toml",
-          "sha256": "5081B8F2238DF69D2361AF926AB0FC1048CBB28D7DF3258136CD08DFE7FDE423"
+          "sha256": "DA8B80F8520846D9F27701E090A3DE443F2302D79A5D5972EEF94C3DF42C30EF"
         },
         {
-          "bytes": 55094,
+          "bytes": 77684,
           "name": "voxelizer/core.py",
-          "sha256": "495E8F6B4014647233F247903129C682B70E17BD459055934F9D80256776AA05"
+          "sha256": "0AE576DBE15B2046E8A0296E1EED7759068B92C721B22F5FDCC35F17B32D0E81"
         },
         {
           "bytes": 9152,
@@ -35,41 +35,41 @@
           "sha256": "9A2715237287B636BD37A729BB5A54B2008E06C30B9A20CADC8D22BEA570788D"
         },
         {
-          "bytes": 14829,
+          "bytes": 15578,
           "name": "voxelizer/preview.py",
-          "sha256": "C84D19CC0763DBDE4EED491DA815A58CB7A612F52A693B65490D00F2B0BDF229"
+          "sha256": "449171E8CDE64EBE7C9B05A8808B1D0C19048CAEE080118F9C3B3CD68A2C83AF"
         }
       ],
-      "sha256": "2561F4E9C53869DCC5E49464D3942F85EE02A55E1742A1989D8A161E1D56A601"
+      "sha256": "EE958E0C8E68CECF25FD1038FE6587C7EF9A52665CF29A3C23F2CFD4D641E409"
     },
     {
-      "bytes": 26462,
-      "file": "dist/chromoxel-blender-0.3.2-extension.zip",
+      "bytes": 35152,
+      "file": "dist/chromoxel-blender-0.5.0-extension.zip",
       "members": [
         {
-          "bytes": 11558,
+          "bytes": 11357,
           "name": "LICENSE.md",
-          "sha256": "1EB85FC97224598DAD1852B5D6483BBCF0AA8608790DCC657A5A2A761AE9C8C6"
+          "sha256": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4"
         },
         {
           "bytes": 60,
           "name": "PACKAGE_ID.txt",
-          "sha256": "F44EF1B0C714CB196BBEEF94E51BE4CF7BF681932E63253C14B0A3BD7A3C8B10"
+          "sha256": "F80AD506E0E00B42178637238182C99A53AFF509B94E1B6A5FCAE8E791921399"
         },
         {
-          "bytes": 12409,
+          "bytes": 30809,
           "name": "__init__.py",
-          "sha256": "3C4ABBBCD2F0A2D1AD2FC4E4EC1B7F4218A08DD6C9B3DF48FA59208F1163CA38"
+          "sha256": "7BE3007662B737AA8B0DDD4C95D7DBC31135970126AFD90E115E795E549E659F"
         },
         {
           "bytes": 296,
           "name": "blender_manifest.toml",
-          "sha256": "5081B8F2238DF69D2361AF926AB0FC1048CBB28D7DF3258136CD08DFE7FDE423"
+          "sha256": "DA8B80F8520846D9F27701E090A3DE443F2302D79A5D5972EEF94C3DF42C30EF"
         },
         {
-          "bytes": 55094,
+          "bytes": 77684,
           "name": "core.py",
-          "sha256": "495E8F6B4014647233F247903129C682B70E17BD459055934F9D80256776AA05"
+          "sha256": "0AE576DBE15B2046E8A0296E1EED7759068B92C721B22F5FDCC35F17B32D0E81"
         },
         {
           "bytes": 9152,
@@ -77,16 +77,16 @@
           "sha256": "9A2715237287B636BD37A729BB5A54B2008E06C30B9A20CADC8D22BEA570788D"
         },
         {
-          "bytes": 14829,
+          "bytes": 15578,
           "name": "preview.py",
-          "sha256": "C84D19CC0763DBDE4EED491DA815A58CB7A612F52A693B65490D00F2B0BDF229"
+          "sha256": "449171E8CDE64EBE7C9B05A8808B1D0C19048CAEE080118F9C3B3CD68A2C83AF"
         }
       ],
-      "sha256": "44E5ED0268228D8CD67E9905DE7BA79CF0476A4567FAA089E6EDB0D6A55AAE6E"
+      "sha256": "6B0EC38A41F2E5926FEBD71B1D0C598AD94EB1D5A72A4150A8C2C8B835FF8C9C"
     }
   ],
   "schema": "chromoxel-blender-release/1",
   "status": "PASS",
-  "version": "0.3.2",
+  "version": "0.5.0",
   "visibility": "public"
 }
