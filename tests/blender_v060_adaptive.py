@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -210,6 +211,32 @@ def run():
     require(baked is not None, "adaptive bake missing")
     require(baked.data.attributes.get(core.SIZE_ATTRIBUTE) is not None, "bake size missing")
     require(baked.data.attributes.get(core.LEVEL_ATTRIBUTE) is not None, "bake level missing")
+    require(
+        len(baked.data.vertices) == adaptive.count * 8,
+        "adaptive bake cube topology does not match the sampled cells",
+    )
+    fill_ratio = 1.0 - settings.cube_gap / settings.voxel_size
+    for cell_index, cell_size in enumerate(adaptive.sizes):
+        cube = baked.data.vertices[cell_index * 8 : (cell_index + 1) * 8]
+        for axis in range(3):
+            extent = max(vertex.co[axis] for vertex in cube) - min(
+                vertex.co[axis] for vertex in cube
+            )
+            require(
+                math.isclose(
+                    extent,
+                    float(cell_size) * fill_ratio,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-5,
+                ),
+                (
+                    "adaptive display gap did not scale with the cell size",
+                    cell_index,
+                    cell_size,
+                    extent,
+                    fill_ratio,
+                ),
+            )
 
     report = {
         "status": "PASS",
@@ -224,6 +251,7 @@ def run():
         "symmetry_closure": True,
         "preview_variable_size": True,
         "bake_variable_size": True,
+        "display_gap_scales_with_level": True,
     }
     print("PASS chromoxel_blender_0.6.0_adaptive", json.dumps(report, sort_keys=True))
 

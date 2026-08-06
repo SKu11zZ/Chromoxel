@@ -21,6 +21,11 @@
 - Added a bilingual four-panel KayKit training-range acceptance render that
   isolates old Uniform 0.16 BU, new Uniform 0.16 BU, and adaptive 0.04 BU
   minimum results under one Cycles pipeline.
+- Fixed the comparison caption compositor so a 72-DPI Cycles image cannot be
+  enlarged and cropped by a 96-DPI GDI+ canvas, and added an outside-caption
+  pixel-preservation audit.
+- Added adaptive Bake regression coverage proving that display gaps scale with
+  each refinement level instead of remaining a fixed absolute distance.
 - Repaired the bilingual README and documented the remaining procedural-shader,
   UDIM, alpha-occupancy, GPU, and camera-LOD limits.
 

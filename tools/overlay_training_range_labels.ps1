@@ -83,8 +83,12 @@ function Draw-PanelLabel {
 }
 
 $resolved = (Resolve-Path -LiteralPath $ImagePath).Path
-$source = [System.Drawing.Image]::FromFile($resolved)
-$bitmap = [System.Drawing.Bitmap]::new($source.Width, $source.Height)
+$source = [System.Drawing.Bitmap]::new($resolved)
+$bitmap = $source.Clone(
+    [System.Drawing.Rectangle]::new(0, 0, $source.Width, $source.Height),
+    [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+)
+$bitmap.SetResolution($source.HorizontalResolution, $source.VerticalResolution)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $titleFont = [System.Drawing.Font]::new(
     "Microsoft YaHei UI",
@@ -98,9 +102,11 @@ $subtitleFont = [System.Drawing.Font]::new(
     [System.Drawing.FontStyle]::Regular,
     [System.Drawing.GraphicsUnit]::Pixel
 )
+$outsideLabelPixelDifferences = -1
 
 try {
-    $graphics.DrawImageUnscaled($source, 0, 0)
+    # Clone the raw pixels before drawing. This avoids the DPI-dependent GDI+
+    # image-copy path that can enlarge and crop a 72-DPI Blender render.
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.TextRenderingHint = (
         [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
@@ -124,6 +130,40 @@ try {
     Draw-PanelLabel $graphics 988 564 $upsample "NEW $dot ADAPTIVE $dot 0.04 BU MIN" `
         ([System.Drawing.Color]::FromArgb(255, 89, 190, 255)) $titleFont $subtitleFont
 
+    # Sparse pixel audit: every sampled pixel outside the four caption cards
+    # must remain bit-identical to the raw Cycles grid. This catches DPI or
+    # interpolation mistakes that move, enlarge, or crop the scene.
+    $labelRectangles = @(
+        [System.Drawing.Rectangle]::new(24, 20, 438, 96),
+        [System.Drawing.Rectangle]::new(984, 20, 438, 96),
+        [System.Drawing.Rectangle]::new(24, 560, 438, 96),
+        [System.Drawing.Rectangle]::new(984, 560, 438, 96)
+    )
+    $outsideLabelPixelDifferences = 0
+    for ($y = 0; $y -lt $source.Height; $y += 16) {
+        for ($x = 0; $x -lt $source.Width; $x += 16) {
+            $insideLabel = $false
+            foreach ($rectangle in $labelRectangles) {
+                if ($rectangle.Contains($x, $y)) {
+                    $insideLabel = $true
+                    break
+                }
+            }
+            if (
+                -not $insideLabel -and
+                $source.GetPixel($x, $y).ToArgb() -ne $bitmap.GetPixel($x, $y).ToArgb()
+            ) {
+                $outsideLabelPixelDifferences += 1
+            }
+        }
+    }
+    if ($outsideLabelPixelDifferences -ne 0) {
+        throw (
+            "Caption composition changed $outsideLabelPixelDifferences " +
+            "sampled pixels outside the caption safe zones."
+        )
+    }
+
     $temporary = [System.IO.Path]::ChangeExtension($resolved, ".labeled.png")
     $bitmap.Save($temporary, [System.Drawing.Imaging.ImageFormat]::Png)
 }
@@ -138,4 +178,7 @@ finally {
 [System.IO.File]::Copy($temporary, $resolved, $true)
 Remove-Item -LiteralPath $temporary -Force
 $hash = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash
-Write-Output "PASS training_range_labels $resolved SHA256=$hash"
+Write-Output (
+    "PASS training_range_labels $resolved SHA256=$hash " +
+    "OUTSIDE_LABEL_PIXEL_DIFFS=$outsideLabelPixelDifferences"
+)

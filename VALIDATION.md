@@ -38,6 +38,13 @@ Date / 日期：2026-08-06
   continuous in the 0.04 BU adaptive panel.
 - The final 1920×1080 Cycles/OptiX comparison passed visual review. Scene
   assets are KayKit: Prototype Bits 1.1 by Kay Lousberg, CC0 1.0.
+- The caption compositor now clones the 72-DPI Blender pixels directly instead
+  of drawing them through a 96-DPI canvas. A 16-pixel-grid audit reported zero
+  changed pixels outside the four caption safe zones, preventing scale/crop
+  regressions.
+- The adaptive Bake regression verifies every cube edge against
+  `cell_size × (1 - cube_gap / base_voxel_size)`; all 296 cells passed, proving
+  that display gaps scale proportionally at every refinement level.
 
 ### Legacy and performance validation
 
@@ -71,6 +78,10 @@ Date / 日期：2026-08-06
 - KayKit 靶场四格使用同一套 27 部件场景、相机、材质、光照和 Cycles 管线；统一
   0.16 BU 为 28,763 个场景体素，自适应以 0.16 BU 为基础、最小 0.04 BU，输出
   76,650 个场景体素。右下圆形靶纸和细线纹理更连续，且不存在原模型覆盖体素的问题。
+- 标题合成改为直接克隆 Blender 的 72-DPI 原始像素，避免被 96-DPI 画布放大裁切；
+  以 16 像素步长检查四个标题安全区之外的画面，差异像素为 0。
+- 新增自适应体素间隙回归，296 个体素均满足“显示边长 = 当前层级尺寸 × 基础填充比例”，
+  证明 0.08/0.04 BU 层级不会继承错误的固定绝对间隙。
 
 The repository contains rendered comparison images produced for Chromoxel. It
 does not include KayKit source assets, private project files, local logs, or
