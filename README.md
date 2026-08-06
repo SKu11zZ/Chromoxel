@@ -20,20 +20,25 @@ Blender 版本使用猴头、UV 球、圆环和凹 NGON 棱柱，在粗、中、
 
 ### Full-scene comparisons / 完整场景对比
 
-The left side is the original Cycles render; the right side is the Chromoxel
-surface-voxel Bake rendered with Cycles.
+![KayKit training range compared across original, legacy uniform, new uniform, and adaptive Chromoxel rendering](docs/images/chromoxel-training-range-old-vs-adaptive.png)
 
-左侧为原始 Cycles 渲染，右侧为 Chromoxel 表面体素化烘焙后的 Cycles 渲染。
+The four panels use the same KayKit training-range scene, camera, materials,
+lighting, and Cycles pipeline. They compare the original render, the legacy
+uniform `0.16 BU` result, the current uniform `0.16 BU` result, and current
+adaptive refinement down to a `0.04 BU` minimum.
 
-![Prototype obstacle scene before and after Chromoxel voxelization](docs/images/kaykit-prototype-scene-original-vs-voxelized.png)
+We optimized this scene specifically for circular bullseyes, thin
+high-contrast markings, and mixed-detail environment surfaces. Texture-aware
+upsampling concentrates smaller cells around markings, while
+surface-preserving planar refinement keeps broad walls and floors flush instead
+of introducing bumps or grooves between voxel levels.
 
-![Prototype training room before and after Chromoxel voxelization](docs/images/kaykit-training-room-original-vs-voxelized.png)
+四格使用同一个 KayKit 靶场场景、相机、材质、灯光和 Cycles 渲染管线，依次对比原始场景、
+旧版统一 `0.16 BU`、新版统一 `0.16 BU`，以及最小细分至 `0.04 BU` 的新版自适应结果。
 
-Both voxelized scenes use a `0.16 BU` cell size. Scene composition, lighting,
-voxelization, and final rendering were produced for the Chromoxel project.
-
-两个体素化场景均使用 `0.16 BU` 单元尺寸；场景搭建、灯光、体素化和最终渲染均为
-Chromoxel 项目演示制作。
+我们针对该场景中的圆形靶纸、细小高对比度标记和混合细节环境表面进行了专门优化：
+纹理感知上采样会把更小的体素集中到图案附近；保持表面共面的平面细分则让大面积墙面和
+地板维持平整，避免不同体素等级之间产生凹凸或沟槽。
 
 **Asset source / 素材来源：** [KayKit: Prototype Bits 1.1 (FREE)](https://kaylousberg.itch.io/prototype-bits),
 created and distributed by / 作者与发行者：[Kay Lousberg](https://www.kaylousberg.com/)。
