@@ -33,6 +33,7 @@ BAKE_KIND = "bake"
 HELPER_KIND = "watertight_helper"
 COLOUR_ATTRIBUTE = "voxel_color"
 SIZE_ATTRIBUTE = "voxel_size"
+EXTENT_ATTRIBUTE = "voxel_extent"
 LEVEL_ATTRIBUTE = "voxel_level"
 MATERIAL_NAME = ".BTVM_voxel_color"
 SOURCE_SIGNATURE_TAG = "_textured_voxelizer_source_signature"
@@ -47,8 +48,9 @@ DEFAULT_CHUNK_SIZE = 4096
 SYMMETRY_RELATIVE_TOLERANCE = 1.0e-6
 SYMMETRY_ABSOLUTE_FLOOR = 1.0e-7
 SYMMETRY_SCHEMA_VERSION = 2
-ADAPTIVE_SCHEMA_VERSION = 1
+ADAPTIVE_SCHEMA_VERSION = 2
 ADAPTIVE_CELL_AXIS_MARGIN = 0.10
+ADAPTIVE_PLANAR_NORMAL_ALIGNMENT = 0.95
 _AXIS_NAMES = ("X", "Y", "Z")
 _LAST_SAMPLING_DIAGNOSTICS: dict[int, dict[str, object]] = {}
 _SAMPLE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
@@ -87,6 +89,7 @@ class VoxelSampleResult:
     centres: list[Vector]
     colours: list[tuple[float, ...]]
     sizes: list[float]
+    extents: list[Vector]
     levels: list[int]
     used_image: bool
 
@@ -112,6 +115,7 @@ class _ColourAnalysis:
 class _VoxelCell:
     centre: Vector
     size: float
+    extent: Vector
     level: int
     colour: tuple[float, ...]
     texture_error: float
@@ -177,6 +181,7 @@ def _cache_put(
     centres: Iterable[Iterable[float]],
     colours: Iterable[Iterable[float]],
     sizes: Iterable[float],
+    extents: Iterable[Iterable[float]],
     levels: Iterable[int],
     used_image: bool,
     diagnostics: dict[str, object],
@@ -192,15 +197,20 @@ def _cache_put(
         for colour in colours
     )
     size_values = tuple(float(value) for value in sizes)
+    extent_values = tuple(
+        tuple(float(component) for component in extent)
+        for extent in extents
+    )
     level_values = tuple(int(value) for value in levels)
     if not (
         len(centre_values)
         == len(colour_values)
         == len(size_values)
+        == len(extent_values)
         == len(level_values)
     ):
         raise VoxelizerError("Cached voxel arrays have inconsistent lengths.")
-    estimated_bytes = len(centre_values) * 96
+    estimated_bytes = len(centre_values) * 120
     budget = cache_budget_bytes(settings)
     if estimated_bytes > budget:
         return
@@ -214,6 +224,7 @@ def _cache_put(
         "centres": centre_values,
         "colours": colour_values,
         "sizes": size_values,
+        "extents": extent_values,
         "levels": level_values,
         "used_image": bool(used_image),
         "diagnostics": json.loads(json.dumps(diagnostics)),
@@ -939,6 +950,7 @@ def preview_sampling_key(
     ))
     sampling_mode = str(getattr(settings, "sampling_mode", "UNIFORM"))
     digest.update(sampling_mode.encode("ascii", "ignore"))
+    digest.update(struct.pack("<I", ADAPTIVE_SCHEMA_VERSION))
     digest.update(struct.pack(
         "<I",
         _setting_int(settings, "adaptive_max_level", 0, 0),
@@ -2026,7 +2038,7 @@ def _canonical_orbit_key(
 
 def _nearest_surface_overlaps_adaptive_cell(
     centre: Vector,
-    cell_size: float,
+    extent: Vector,
     nearest_location: Vector,
 ) -> bool:
     """Reject circumsphere-only hits that cannot survive subdivision.
@@ -2038,11 +2050,26 @@ def _nearest_surface_overlaps_adaptive_cell(
     being hidden behind a coarse, non-intersecting outer layer.
     """
 
-    axis_limit = cell_size * (0.5 + ADAPTIVE_CELL_AXIS_MARGIN)
-    return max(
+    return all(
         abs(float(nearest_location[axis]) - float(centre[axis]))
+        <= float(extent[axis]) * (0.5 + ADAPTIVE_CELL_AXIS_MARGIN) + 1.0e-9
         for axis in range(3)
-    ) <= axis_limit + 1.0e-9
+    )
+
+
+def _planar_refinement_axis(
+    cell: _VoxelCell,
+    bvh: BVHTree,
+) -> Optional[int]:
+    """Return the normal axis for surface-preserving grid-aligned refinement."""
+    nearest = bvh.find_nearest(cell.centre)
+    if nearest is None or nearest[1] is None:
+        return None
+    normal = nearest[1].normalized()
+    axis = max(range(3), key=lambda index: abs(float(normal[index])))
+    if abs(float(normal[axis])) < ADAPTIVE_PLANAR_NORMAL_ALIGNMENT:
+        return None
+    return axis
 
 
 def _adaptive_refine_cells_iter(
@@ -2074,6 +2101,7 @@ def _adaptive_refine_cells_iter(
     chunk_size = sampling_chunk_size(settings)
     tests = 0
     refined_parent_count = 0
+    planar_refined_parent_count = 0
     budget_limited = False
     level_reports = []
     working = list(cells)
@@ -2107,22 +2135,37 @@ def _adaptive_refine_cells_iter(
         refined_this_level = 0
         children_this_level = 0
         for candidate_number, (_score, _key, group) in enumerate(candidates, start=1):
-            if tests + 8 > refinement_test_limit:
-                budget_limited = True
-                break
             canonical_parent = min(
                 group,
                 key=lambda cell: _cell_key(cell.centre, cell.size),
             )
             child_size = canonical_parent.size * 0.5
             child_offset = child_size * 0.5
-            shell_distance = child_size * math.sqrt(3.0) * 0.52
+            planar_axis = _planar_refinement_axis(
+                canonical_parent,
+                bvh,
+            )
+            child_signs = (
+                tuple(
+                    0 if axis == planar_axis else sign[axis]
+                    for axis in range(3)
+                )
+                for sign in _CUBE_CORNERS
+            ) if planar_axis is not None else iter(_CUBE_CORNERS)
+            child_signs = tuple(dict.fromkeys(child_signs))
+            if tests + len(child_signs) > refinement_test_limit:
+                budget_limited = True
+                break
             generated: dict[tuple[float, float, float, float], _VoxelCell] = {}
-            for signs in _CUBE_CORNERS:
+            for signs in child_signs:
                 tests += 1
                 child_centre = canonical_parent.centre + Vector(tuple(
                     sign * child_offset for sign in signs
                 ))
+                child_extent = Vector((child_size, child_size, child_size))
+                if planar_axis is not None:
+                    child_extent[planar_axis] = canonical_parent.extent[planar_axis]
+                shell_distance = float(child_extent.length) * 0.52
                 nearest = bvh.find_nearest(child_centre, shell_distance)
                 if (
                     nearest is None
@@ -2131,7 +2174,7 @@ def _adaptive_refine_cells_iter(
                     or float(nearest[3]) > shell_distance
                     or not _nearest_surface_overlaps_adaptive_cell(
                         child_centre,
-                        child_size,
+                        child_extent,
                         nearest[0],
                     )
                 ):
@@ -2144,6 +2187,7 @@ def _adaptive_refine_cells_iter(
                     child = _VoxelCell(
                         centre=orbit_centre,
                         size=child_size,
+                        extent=child_extent.copy(),
                         level=level + 1,
                         colour=analysis.colour,
                         texture_error=analysis.texture_error,
@@ -2164,6 +2208,8 @@ def _adaptive_refine_cells_iter(
             output.update(generated)
             refined_this_level += len(group)
             refined_parent_count += len(group)
+            if planar_axis is not None:
+                planar_refined_parent_count += len(group)
             children_this_level += len(generated)
             if candidate_number % chunk_size == 0:
                 yield SamplingProgress(
@@ -2208,6 +2254,7 @@ def _adaptive_refine_cells_iter(
         "refinement_tests": tests,
         "refinement_test_limit": refinement_test_limit,
         "refined_parent_count": refined_parent_count,
+        "planar_refined_parent_count": planar_refined_parent_count,
         "budget_limited": budget_limited,
         "level_histogram": {str(level): count for level, count in sorted(histogram.items())},
         "levels": level_reports,
@@ -2426,7 +2473,7 @@ def _sample_surface_voxels_from_meshes_iter(
                 if distance <= shell_distance:
                     if adaptive_enabled and not _nearest_surface_overlaps_adaptive_cell(
                         centre,
-                        voxel_size,
+                        Vector((voxel_size, voxel_size, voxel_size)),
                         location,
                     ):
                         adaptive_rejected_seed_count += 1
@@ -2464,7 +2511,7 @@ def _sample_surface_voxels_from_meshes_iter(
                 if nearest[3] <= shell_distance:
                     if adaptive_enabled and not _nearest_surface_overlaps_adaptive_cell(
                         centre,
-                        voxel_size,
+                        Vector((voxel_size, voxel_size, voxel_size)),
                         nearest[0],
                     ):
                         adaptive_rejected_seed_count += 1
@@ -2541,6 +2588,7 @@ def _sample_surface_voxels_from_meshes_iter(
         _VoxelCell(
             centre=centre,
             size=voxel_size,
+            extent=Vector((voxel_size, voxel_size, voxel_size)),
             level=0,
             colour=colour,
             texture_error=analysis.texture_error,
@@ -2568,6 +2616,7 @@ def _sample_surface_voxels_from_meshes_iter(
     centres = [cell.centre for cell in cells]
     colours = [cell.colour for cell in cells]
     sizes = [cell.size for cell in cells]
+    extents = [cell.extent for cell in cells]
     levels = [cell.level for cell in cells]
     diagnostics = {
         "schema": SYMMETRY_SCHEMA_VERSION,
@@ -2625,6 +2674,7 @@ def _sample_surface_voxels_from_meshes_iter(
         centres=centres,
         colours=colours,
         sizes=sizes,
+        extents=extents,
         levels=levels,
         used_image=sampler.uses_image,
     )
@@ -2666,6 +2716,10 @@ def sample_surface_voxels_iter(
                 "sizes",
                 [float(settings.voxel_size)] * len(centres),
             )]
+            extents = [Vector(value) for value in entry.get(
+                "extents",
+                [(size, size, size) for size in sizes],
+            )]
             levels = [int(value) for value in entry.get(
                 "levels",
                 [0] * len(centres),
@@ -2680,6 +2734,7 @@ def sample_surface_voxels_iter(
                 centres=centres,
                 colours=colours,
                 sizes=sizes,
+                extents=extents,
                 levels=levels,
                 used_image=bool(entry["used_image"]),
             )
@@ -2725,6 +2780,7 @@ def sample_surface_voxels_iter(
             centres=centres,
             colours=colours,
             sizes=[float(settings.voxel_size)] * len(centres),
+            extents=[Vector((float(settings.voxel_size),) * 3)] * len(centres),
             levels=[0] * len(centres),
             used_image=used_image,
         )
@@ -2735,6 +2791,7 @@ def sample_surface_voxels_iter(
         result.centres,
         result.colours,
         result.sizes,
+        result.extents,
         result.levels,
         result.used_image,
         diagnostics,
@@ -2798,12 +2855,14 @@ def build_voxel_mesh_iter(
             centres=centres,
             colours=colours,
             sizes=[float(settings.voxel_size)] * len(centres),
+            extents=[Vector((float(settings.voxel_size),) * 3)] * len(centres),
             levels=[0] * len(centres),
             used_image=used_image,
         )
     centres = sample_result.centres
     colours = sample_result.colours
     sizes = sample_result.sizes
+    extents = sample_result.extents
     levels = sample_result.levels
     count = sample_result.count
     used_image = sample_result.used_image
@@ -2815,14 +2874,17 @@ def build_voxel_mesh_iter(
     result_vertices = []
     result_faces = []
     chunk_size = sampling_chunk_size(settings)
-    for voxel_number, (centre, cell_size) in enumerate(zip(centres, sizes), start=1):
-        half_extent = cell_size * fill_ratio * 0.5
+    for voxel_number, (centre, cell_extent) in enumerate(
+        zip(centres, extents),
+        start=1,
+    ):
+        half_extent = Vector(cell_extent) * fill_ratio * 0.5
         first_vertex = len(result_vertices)
         result_vertices.extend(
             (
-                centre.x + x_sign * half_extent,
-                centre.y + y_sign * half_extent,
-                centre.z + z_sign * half_extent,
+                centre.x + x_sign * half_extent.x,
+                centre.y + y_sign * half_extent.y,
+                centre.z + z_sign * half_extent.z,
             )
             for x_sign, y_sign, z_sign in _CUBE_CORNERS
         )
@@ -2854,6 +2916,11 @@ def build_voxel_mesh_iter(
             type="FLOAT",
             domain="FACE",
         )
+        extent_attribute = result.attributes.new(
+            name=EXTENT_ATTRIBUTE,
+            type="FLOAT_VECTOR",
+            domain="FACE",
+        )
         level_attribute = result.attributes.new(
             name=LEVEL_ATTRIBUTE,
             type="INT",
@@ -2863,6 +2930,7 @@ def build_voxel_mesh_iter(
             voxel_index = polygon.index // 6
             colour = colours[voxel_index]
             size_attribute.data[polygon.index].value = sizes[voxel_index]
+            extent_attribute.data[polygon.index].vector = extents[voxel_index]
             level_attribute.data[polygon.index].value = levels[voxel_index]
             for loop_index in polygon.loop_indices:
                 attribute.data[loop_index].color = colour

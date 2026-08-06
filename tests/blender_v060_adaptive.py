@@ -111,19 +111,29 @@ def create_target_box(image):
     return obj
 
 
-def sample_key(centre, size):
-    return tuple(round(float(value), 7) for value in centre) + (round(float(size), 7),)
+def sample_key(centre, size, extent):
+    return (
+        tuple(round(float(value), 7) for value in centre)
+        + (round(float(size), 7),)
+        + tuple(round(float(value), 7) for value in extent)
+    )
 
 
 def require_symmetric(result, diagnostics):
-    keys = {sample_key(centre, size) for centre, size in zip(result.centres, result.sizes)}
+    keys = {
+        sample_key(centre, size, extent)
+        for centre, size, extent in zip(result.centres, result.sizes, result.extents)
+    }
     for axis_name in diagnostics["proven_axes"]:
         axis = "XYZ".index(axis_name)
         plane = float(diagnostics["source_symmetry"]["axes"][axis_name]["plane"])
-        for centre, size in zip(result.centres, result.sizes):
+        for centre, size, extent in zip(result.centres, result.sizes, result.extents):
             mirrored = Vector(centre)
             mirrored[axis] = 2.0 * plane - mirrored[axis]
-            require(sample_key(mirrored, size) in keys, f"missing adaptive {axis_name} orbit")
+            require(
+                sample_key(mirrored, size, extent) in keys,
+                f"missing adaptive {axis_name} orbit",
+            )
 
 
 def run():
@@ -152,6 +162,11 @@ def run():
     require(set(uniform.levels) == {0}, uniform.levels)
     require(set(round(value, 7) for value in uniform.sizes) == {0.5}, uniform.sizes)
     require(
+        all(tuple(round(float(axis), 7) for axis in extent) == (0.5, 0.5, 0.5)
+            for extent in uniform.extents),
+        uniform.extents,
+    )
+    require(
         any(colour[0] > colour[1] + 0.25 for colour in uniform.colours),
         "uniform compatibility path did not sample the image",
     )
@@ -167,6 +182,7 @@ def run():
     require(2 in adaptive.levels, diagnostics["adaptive"])
     require(min(adaptive.sizes) == 0.125, min(adaptive.sizes))
     require(diagnostics["adaptive"]["refined_parent_count"] > 0, diagnostics)
+    require(diagnostics["adaptive"]["planar_refined_parent_count"] > 0, diagnostics)
     require(diagnostics["adaptive_rejected_seed_count"] > 0, diagnostics)
     require(
         max(abs(float(centre.z)) for centre in adaptive.centres) < 0.4,
@@ -174,13 +190,44 @@ def run():
     )
     require_symmetric(adaptive, diagnostics)
 
+    profile_fill = 1.0 - settings.cube_gap / settings.voxel_size
+    front_profile = {}
+    for centre, cell_size, cell_extent, level in zip(
+        adaptive.centres,
+        adaptive.sizes,
+        adaptive.extents,
+        adaptive.levels,
+    ):
+        if abs(centre.z) > 0.25 or abs(centre.x) >= 0.75 or abs(centre.y) >= 0.75:
+            continue
+        outer_face = float(centre.z) + float(cell_extent.z) * profile_fill * 0.5
+        front_profile.setdefault(str(level), []).append(outer_face)
+    require("1" in front_profile and "2" in front_profile, front_profile)
+    flat_faces = [value for values in front_profile.values() for value in values]
+    require(
+        max(flat_faces) - min(flat_faces) <= 1.0e-6,
+        ("adaptive planar surface is not flush", front_profile),
+    )
+    require(
+        any(
+            level == 2
+            and math.isclose(float(extent.z), settings.voxel_size, abs_tol=1.0e-7)
+            and math.isclose(float(extent.x), size, abs_tol=1.0e-7)
+            and math.isclose(float(extent.y), size, abs_tol=1.0e-7)
+            for size, extent, level in zip(adaptive.sizes, adaptive.extents, adaptive.levels)
+        ),
+        "texture-only planar refinement did not preserve normal thickness",
+    )
+
     settings.adaptive_max_level = 4
+    settings.voxel_size = 0.25
     settings.voxel_budget = 1_000
     budgeted = core.sample_surface_voxels(bpy.context, source, settings, use_cache=False)
     budget_diagnostics = core.sampling_diagnostics(source)
     require(budgeted.count <= 1_000, budgeted.count)
     require(budget_diagnostics["adaptive"]["budget_limited"], budget_diagnostics)
-    require(4 in budgeted.levels, budget_diagnostics["adaptive"])
+    require(3 in budgeted.levels, budget_diagnostics["adaptive"])
+    settings.voxel_size = 0.5
     settings.adaptive_max_level = 2
     settings.voxel_budget = 100_000
     adaptive = core.sample_surface_voxels(bpy.context, source, settings, use_cache=False)
@@ -201,22 +248,27 @@ def run():
     output = bpy.data.objects.get(core.preview_name(source))
     require(output is not None, "adaptive preview missing")
     require(output.data.attributes.get(core.SIZE_ATTRIBUTE) is not None, "preview size missing")
+    require(output.data.attributes.get(core.EXTENT_ATTRIBUTE) is not None, "preview extent missing")
     require(output.data.attributes.get(core.LEVEL_ATTRIBUTE) is not None, "preview level missing")
     modifier = output.modifiers.get(preview.MODIFIER_NAME)
     require(modifier is not None, "adaptive GN modifier missing")
-    require(modifier.node_group.nodes.get("BTVM_Voxel_Size") is not None, "GN size reader missing")
+    require(
+        modifier.node_group.nodes.get("BTVM_Voxel_Extent") is not None,
+        "GN extent reader missing",
+    )
 
     require(bpy.ops.voxelizer.bake() == {"FINISHED"}, "adaptive bake failed")
     baked = bpy.data.objects.get(core.bake_name(source))
     require(baked is not None, "adaptive bake missing")
     require(baked.data.attributes.get(core.SIZE_ATTRIBUTE) is not None, "bake size missing")
+    require(baked.data.attributes.get(core.EXTENT_ATTRIBUTE) is not None, "bake extent missing")
     require(baked.data.attributes.get(core.LEVEL_ATTRIBUTE) is not None, "bake level missing")
     require(
         len(baked.data.vertices) == adaptive.count * 8,
         "adaptive bake cube topology does not match the sampled cells",
     )
     fill_ratio = 1.0 - settings.cube_gap / settings.voxel_size
-    for cell_index, cell_size in enumerate(adaptive.sizes):
+    for cell_index, cell_extent in enumerate(adaptive.extents):
         cube = baked.data.vertices[cell_index * 8 : (cell_index + 1) * 8]
         for axis in range(3):
             extent = max(vertex.co[axis] for vertex in cube) - min(
@@ -225,14 +277,14 @@ def run():
             require(
                 math.isclose(
                     extent,
-                    float(cell_size) * fill_ratio,
+                    float(cell_extent[axis]) * fill_ratio,
                     rel_tol=0.0,
                     abs_tol=1.0e-5,
                 ),
                 (
                     "adaptive display gap did not scale with the cell size",
                     cell_index,
-                    cell_size,
+                    tuple(cell_extent),
                     extent,
                     fill_ratio,
                 ),
@@ -252,6 +304,7 @@ def run():
         "preview_variable_size": True,
         "bake_variable_size": True,
         "display_gap_scales_with_level": True,
+        "planar_surface_flush": True,
     }
     print("PASS chromoxel_blender_0.6.0_adaptive", json.dumps(report, sort_keys=True))
 

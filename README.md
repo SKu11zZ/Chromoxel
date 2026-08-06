@@ -19,6 +19,16 @@ as bullseyes, circular markings, thin lines, and sharp colour boundaries to
 0.08 or 0.04 BU. Broad, low-detail areas remain coarser, concentrating the
 voxel and sampling budget where it contributes visible detail.
 
+Grid-aligned flat faces use surface-preserving 2D refinement: Chromoxel
+subdivides along the face while retaining the parent cell's normal thickness.
+This keeps mixed 0.16/0.08/0.04 BU levels flush instead of introducing bumps
+or grooves. Curved and non-axis-aligned regions continue to use full 3D
+refinement for silhouette accuracy.
+
+对于与体素网格对齐的平整表面，Chromoxel 采用保持表面共面的二维细分：只沿表面方向提高
+分辨率，并保留父体素在法线方向的厚度。因此 0.16/0.08/0.04 BU 混合层级不会在平面上
+产生凹凸或沟槽；曲面和非轴对齐区域仍使用完整三维细分，以保持轮廓精度。
+
 **Chromoxel 0.6 不会把整个场景无差别压到 0.04 BU。** 它以 0.16 BU
 为基础网格，分析纹理足迹对比度和几何边缘误差，只对圆形靶纸、细线、锐利颜色边界等
 高频区域进行 0.08/0.04 BU 局部上采样；大面积低细节区域维持较粗体素，把体素数量和
@@ -79,8 +89,8 @@ provides a lightweight Geometry Nodes preview for iteration and a realized
   analysis instead of one nearest texel per voxel.
 - Adaptive refinement is mirrored over every proven geometry-symmetry axis.
   Geometry stays exactly symmetric while colours are sampled independently.
-- Preview and Bake now carry `voxel_size` and `voxel_level` in addition to the
-  existing `voxel_color` attribute.
+- Preview and Bake now carry `voxel_size`, per-axis `voxel_extent`, and
+  `voxel_level` in addition to the existing `voxel_color` attribute.
 - **Uniform** mode preserves the 0.5 single-size workflow for compatibility.
 
 ### Highlights
@@ -162,7 +172,9 @@ allowing every hard-surface edge to expand through all levels.
 Output attributes:
 
 - `voxel_color`: sampled scene-linear colour.
-- `voxel_size`: actual cell size before the display gap is applied.
+- `voxel_size`: adaptive sampling resolution for the cell.
+- `voxel_extent`: actual XYZ display/Bake dimensions before the proportional
+  display gap is applied; flat refined cells may be thinner in two axes only.
 - `voxel_level`: `0` for the base grid, `1` for half size, `2` for quarter size,
   and so on.
 
@@ -233,7 +245,8 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
 - 未指定手动图片时，可从材质节点的 Base Color 链路自动寻找图片贴图。
 - 使用双线性过滤和 3×3 UV 足迹分析，不再只为每个体素读取一个最近像素。
 - 自适应细分会同步闭合所有已证明的几何对称轴；几何保持精确对称，颜色独立采样。
-- Preview 与 Bake 在 `voxel_color` 之外新增 `voxel_size` 和 `voxel_level` 属性。
+- Preview 与 Bake 在 `voxel_color` 之外新增 `voxel_size`、三轴
+  `voxel_extent` 和 `voxel_level` 属性。
 - 保留 **Uniform** 模式，兼容 0.5 的单一体素尺寸工作流。
 
 ### 功能特点
@@ -301,7 +314,9 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
 输出属性：
 
 - `voxel_color`：采样后的场景线性颜色。
-- `voxel_size`：应用显示间隙之前的实际体素尺寸。
+- `voxel_size`：当前体素的自适应采样分辨率。
+- `voxel_extent`：应用比例显示间隙之前的实际 XYZ 尺寸；平面细分体素只会在两个
+  表面方向缩小，法线厚度保持稳定。
 - `voxel_level`：基础层为 `0`，半尺寸为 `1`，四分之一尺寸为 `2`，依次类推。
 
 当几何、网格、材质、图片、自适应设置和预算一致时，Preview 与 Bake 会复用同一份占用、

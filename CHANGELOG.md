@@ -26,6 +26,11 @@
   pixel-preservation audit.
 - Added adaptive Bake regression coverage proving that display gaps scale with
   each refinement level instead of remaining a fixed absolute distance.
+- Added surface-preserving 2D refinement for grid-aligned flat faces. Mixed
+  adaptive levels now retain a shared normal thickness instead of creating
+  depth steps on walls, floors, tables, or flat decals.
+- Added the per-axis `voxel_extent` attribute to Preview and Bake while keeping
+  `voxel_size` as the adaptive sampling-resolution compatibility attribute.
 - Repaired the bilingual README and documented the remaining procedural-shader,
   UDIM, alpha-occupancy, GPU, and camera-LOD limits.
 
