@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0 - 2026-08-06
+
+- Added budget-bounded, power-of-two adaptive surface refinement driven by
+  filtered texture-footprint error and nearby sharp geometry edges.
+- Added exact refinement-orbit closure over every proven symmetry axis so
+  variable voxel sizes cannot make symmetric source geometry asymmetric.
+- Added automatic per-material Base Color image discovery, active/named UV
+  fallback, bilinear reconstruction, and nine-tap footprint analysis.
+- Kept footprint variance as the refinement signal while preserving the centre
+  sample as voxel colour, and added an adaptive AABB-overlap guard so thin
+  decals are not blurred or hidden by circumsphere-only outer cells.
+- Added variable-size Geometry Nodes preview instances and realized Bake support
+  through the `voxel_size` and `voxel_level` attributes.
+- Preserved the legacy Uniform mode and the four-value sampling-result unpacking
+  contract for existing scripts and saved workflows.
+- Added a synthetic high-contrast bullseye regression covering diagonal ring
+  retention, material auto-detection, adaptive budgets, symmetry, Preview, and
+  Bake.
+- Repaired the bilingual README and documented the remaining procedural-shader,
+  UDIM, alpha-occupancy, GPU, and camera-LOD limits.
+
 ## 0.5.0 - 2026-08-02
 
 - Added a modifier-style, non-destructive Geometry Nodes preview workflow with

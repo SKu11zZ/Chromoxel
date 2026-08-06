@@ -21,11 +21,11 @@ from . import core, live, preview
 
 bl_info = {
     "name": "Chromoxel",
-    "author": "SKu11zZ",
-    "version": (0, 5, 0),
+    "author": "Moore \"Zz11uKS\" Ji",
+    "version": (0, 6, 0),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
-    "description": "Build texture-aware, symmetry-safe voxel shells from meshes",
+    "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
     "category": "Object",
 }
 
@@ -189,6 +189,50 @@ class VOXELIZER_PG_settings(PropertyGroup):
         unit="LENGTH",
         update=_voxel_size_changed,
     )
+    sampling_mode: EnumProperty(
+        name="Detail Mode",
+        description="Use one uniform grid or automatically refine high-error surface cells",
+        items=(
+            ("ADAPTIVE", "Adaptive", "Refine texture boundaries and sharp geometry automatically"),
+            ("UNIFORM", "Uniform", "Use the legacy single-size voxel grid"),
+        ),
+        default="ADAPTIVE",
+        update=_geometry_setting_changed,
+    )
+    adaptive_max_level: IntProperty(
+        name="Max Detail Level",
+        description="Maximum power-of-two refinement depth; 2 means base, half, and quarter size",
+        default=2,
+        min=0,
+        max=4,
+        update=_geometry_setting_changed,
+    )
+    adaptive_texture_threshold: FloatProperty(
+        name="Texture Error",
+        description="Minimum colour range inside a voxel before it is refined",
+        default=0.16,
+        min=0.01,
+        max=1.0,
+        precision=3,
+        update=_geometry_setting_changed,
+    )
+    adaptive_geometry_angle: FloatProperty(
+        name="Geometry Angle",
+        description="Minimum nearby edge angle in degrees before a voxel is refined",
+        default=35.0,
+        min=1.0,
+        max=180.0,
+        precision=1,
+        update=_geometry_setting_changed,
+    )
+    adaptive_geometry_max_level: IntProperty(
+        name="Geometry Detail Level",
+        description="Maximum refinement depth used only for sharp geometry edges",
+        default=1,
+        min=0,
+        max=4,
+        update=_geometry_setting_changed,
+    )
     cube_gap: FloatProperty(
         name="Cube Gap",
         description="Empty distance between neighbouring cube faces",
@@ -209,6 +253,22 @@ class VOXELIZER_PG_settings(PropertyGroup):
         name="BaseColor Image",
         description="Image sampled through the selected UV map",
         type=bpy.types.Image,
+        update=_geometry_setting_changed,
+    )
+    auto_material_images: BoolProperty(
+        name="Auto Material Images",
+        description="When no override image is selected, find Base Color images from material nodes",
+        default=True,
+        update=_geometry_setting_changed,
+    )
+    texture_filter: EnumProperty(
+        name="Texture Filter",
+        description="How UV image samples are reconstructed",
+        items=(
+            ("BILINEAR", "Bilinear", "Filtered sampling for stable texture boundaries"),
+            ("NEAREST", "Nearest", "Legacy point sampling for pixel-art sources"),
+        ),
+        default="BILINEAR",
         update=_geometry_setting_changed,
     )
     fallback_color: FloatVectorProperty(
@@ -376,7 +436,8 @@ class VOXELIZER_OT_estimate(Operator):
             memory_mb = int(report["estimated_memory_bytes"]) / (1024 * 1024)
             settings.estimate_summary = (
                 f"{report['source_count']} source(s) | "
-                f"~{report['estimated_candidates']:,} candidates | {memory_mb:.1f} MiB"
+                f"~{report['estimated_candidates']:,} candidates | "
+                f"~{report['estimated_output_voxels']:,} voxels | {memory_mb:.1f} MiB"
             )
             settings.estimate_detail = (
                 f"Full grid {report['full_grid_samples']:,} | "
@@ -714,6 +775,11 @@ class VOXELIZER_PT_panel(Panel):
             )
             operator.preset = identifier
         quality_box.prop(settings, "voxel_size")
+        quality_box.prop(settings, "sampling_mode", expand=True)
+        if settings.sampling_mode == "ADAPTIVE":
+            quality_box.prop(settings, "adaptive_max_level")
+            smallest = settings.voxel_size / (2 ** settings.adaptive_max_level)
+            quality_box.label(text=f"Automatic minimum size: {smallest:.4g} BU")
         quality_box.prop(settings, "cube_gap")
         quality_box.prop(settings, "grid_origin_mode")
         if settings.grid_origin_mode == "CUSTOM":
@@ -750,11 +816,13 @@ class VOXELIZER_PT_panel(Panel):
 
         colour_box = layout.box()
         colour_box.label(text="Colour", icon="IMAGE_DATA")
+        colour_box.prop(settings, "auto_material_images")
         if source is not None and source.type == "MESH":
             colour_box.prop_search(settings, "uv_map", source.data, "uv_layers", text="UV Map")
         else:
             colour_box.prop(settings, "uv_map")
-        colour_box.prop(settings, "base_color_image")
+        colour_box.prop(settings, "base_color_image", text="Image Override")
+        colour_box.prop(settings, "texture_filter")
         colour_box.prop(settings, "fallback_color")
 
         advanced_box = layout.box()
@@ -765,6 +833,10 @@ class VOXELIZER_PT_panel(Panel):
             emboss=False,
         )
         if settings.show_advanced:
+            if settings.sampling_mode == "ADAPTIVE":
+                advanced_box.prop(settings, "adaptive_texture_threshold")
+                advanced_box.prop(settings, "adaptive_geometry_angle")
+                advanced_box.prop(settings, "adaptive_geometry_max_level")
             advanced_box.prop(settings, "use_sparse_candidates")
             if settings.use_sparse_candidates:
                 advanced_box.prop(settings, "sparse_grid_threshold")

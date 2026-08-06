@@ -18,9 +18,11 @@ SOURCE_TAG = "_textured_voxelizer_source"
 PREVIEW_GROUP_KIND = "preview_node_group"
 PREVIEW_MODIFIER_KIND = "preview_instancer"
 COLOUR_ATTRIBUTE = "voxel_color"
-GROUP_NAME = ".BTVM_PREVIEW_INSTANCER"
+SIZE_ATTRIBUTE = "voxel_size"
+LEVEL_ATTRIBUTE = "voxel_level"
+GROUP_NAME = ".BTVM_PREVIEW_INSTANCER_V2"
 MODIFIER_NAME = ".BTVM Preview Instances"
-SCALE_SOCKET_NAME = "Cube Size"
+SCALE_SOCKET_NAME = "Cube Fill"
 CACHE_KEY_TAG = "_textured_voxelizer_cache_key"
 POINT_HASH_TAG = "_textured_voxelizer_point_hash"
 BUILD_COUNT_TAG = "_textured_voxelizer_build_count"
@@ -82,6 +84,8 @@ def ensure_node_group(material: bpy.types.Material) -> bpy.types.NodeTree:
             "BTVM_Group_Input",
             "BTVM_Reusable_Cube",
             "BTVM_Set_Material",
+            "BTVM_Voxel_Size",
+            "BTVM_Size_Multiply",
             "BTVM_Cube_Scale",
             "BTVM_Instance_on_Points",
             "BTVM_Group_Output",
@@ -106,6 +110,7 @@ def ensure_node_group(material: bpy.types.Material) -> bpy.types.NodeTree:
     )
     scale_in.default_value = 1.0
     scale_in.min_value = 0.0
+    scale_in.max_value = 1.0
     geometry_out = _new_interface_socket(
         group, "Geometry", "OUTPUT", "NodeSocketGeometry"
     )
@@ -124,6 +129,15 @@ def ensure_node_group(material: bpy.types.Material) -> bpy.types.NodeTree:
     set_material.name = "BTVM_Set_Material"
     set_material.location = (-280.0, -170.0)
     set_material.inputs["Material"].default_value = material
+    named_size = nodes.new("GeometryNodeInputNamedAttribute")
+    named_size.name = "BTVM_Voxel_Size"
+    named_size.data_type = "FLOAT"
+    named_size.inputs["Name"].default_value = SIZE_ATTRIBUTE
+    named_size.location = (-520.0, 20.0)
+    multiply = nodes.new("ShaderNodeMath")
+    multiply.name = "BTVM_Size_Multiply"
+    multiply.operation = "MULTIPLY"
+    multiply.location = (-360.0, 20.0)
     combine = nodes.new("ShaderNodeCombineXYZ")
     combine.name = "BTVM_Cube_Scale"
     combine.location = (-280.0, 10.0)
@@ -138,8 +152,10 @@ def ensure_node_group(material: bpy.types.Material) -> bpy.types.NodeTree:
     links.new(group_input.outputs[geometry_in.identifier], instances.inputs["Points"])
     links.new(cube.outputs["Mesh"], set_material.inputs["Geometry"])
     links.new(set_material.outputs["Geometry"], instances.inputs["Instance"])
+    links.new(named_size.outputs["Attribute"], multiply.inputs[0])
+    links.new(group_input.outputs[scale_in.identifier], multiply.inputs[1])
     for axis in ("X", "Y", "Z"):
-        links.new(group_input.outputs[scale_in.identifier], combine.inputs[axis])
+        links.new(multiply.outputs["Value"], combine.inputs[axis])
     links.new(combine.outputs["Vector"], instances.inputs["Scale"])
     links.new(instances.outputs["Instances"], group_output.inputs[geometry_out.identifier])
     return group
@@ -209,13 +225,22 @@ def build_carrier_mesh(
     mesh_name: str,
     centres: Iterable[Iterable[float]],
     colours: Iterable[Iterable[float]],
+    sizes: Iterable[float],
+    levels: Iterable[int],
 ) -> bpy.types.Mesh:
-    """Create V points/zero faces with POINT-domain ``voxel_color``."""
+    """Create V points with colour, cell-size, and refinement-level attributes."""
 
     centre_values = [tuple(float(value) for value in centre) for centre in centres]
     colour_values = [tuple(float(value) for value in colour) for colour in colours]
-    if len(centre_values) != len(colour_values):
-        raise PreviewError("Every preview point must have exactly one colour.")
+    size_values = [float(value) for value in sizes]
+    level_values = [int(value) for value in levels]
+    if not (
+        len(centre_values)
+        == len(colour_values)
+        == len(size_values)
+        == len(level_values)
+    ):
+        raise PreviewError("Every preview point must have colour, size, and level data.")
     if not centre_values:
         raise PreviewError("Preview carrier cannot be empty.")
 
@@ -229,6 +254,20 @@ def build_carrier_mesh(
         )
         for datum, colour in zip(attribute.data, colour_values):
             datum.color = colour
+        size_attribute = mesh.attributes.new(
+            name=SIZE_ATTRIBUTE,
+            type="FLOAT",
+            domain="POINT",
+        )
+        level_attribute = mesh.attributes.new(
+            name=LEVEL_ATTRIBUTE,
+            type="INT",
+            domain="POINT",
+        )
+        for datum, value in zip(size_attribute.data, size_values):
+            datum.value = value
+        for datum, value in zip(level_attribute.data, level_values):
+            datum.value = value
         mesh.update()
     except Exception:
         bpy.data.meshes.remove(mesh)
@@ -240,16 +279,24 @@ def configure_preview(
     output: bpy.types.Object,
     centres: Iterable[Iterable[float]],
     colours: Iterable[Iterable[float]],
-    cube_size: float,
+    sizes: Iterable[float],
+    levels: Iterable[int],
+    cube_fill: float,
     material: bpy.types.Material,
 ) -> int:
     """Replace an owned preview's carrier and attach its non-realized instancer."""
 
-    mesh = build_carrier_mesh(f"{output.name}_Carrier", centres, colours)
+    mesh = build_carrier_mesh(
+        f"{output.name}_Carrier",
+        centres,
+        colours,
+        sizes,
+        levels,
+    )
     old_mesh = output.data if output.type == "MESH" else None
     try:
         output.data = mesh
-        ensure_modifier(output, material, cube_size)
+        ensure_modifier(output, material, cube_fill)
     except Exception:
         if output.data is mesh:
             output.data = old_mesh
@@ -269,16 +316,28 @@ def display_cube_size(settings) -> float:
     )
 
 
+def display_cube_fill(settings) -> float:
+    voxel_size = max(SAFE_MINIMUM, float(settings.voxel_size))
+    return max(
+        SAFE_MINIMUM,
+        min(1.0, 1.0 - float(settings.cube_gap) / voxel_size),
+    )
+
+
 def _point_hash(
     centres: Iterable[Iterable[float]],
     colours: Iterable[Iterable[float]],
+    sizes: Iterable[float],
+    levels: Iterable[int],
 ) -> str:
     digest = hashlib.sha256()
-    for centre, colour in zip(centres, colours):
+    for centre, colour, size, level in zip(centres, colours, sizes, levels):
         digest.update(
             struct.pack(
-                "<7d",
+                "<8dI",
                 *(float(value) for value in tuple(centre) + tuple(colour)),
+                float(size),
+                int(level),
             )
         )
     return digest.hexdigest()
@@ -288,11 +347,21 @@ def _carrier_is_valid(output: bpy.types.Object) -> bool:
     if output.type != "MESH" or len(output.data.polygons) != 0:
         return False
     attribute = output.data.color_attributes.get(COLOUR_ATTRIBUTE)
+    size_attribute = output.data.attributes.get(SIZE_ATTRIBUTE)
+    level_attribute = output.data.attributes.get(LEVEL_ATTRIBUTE)
     return (
         attribute is not None
         and attribute.domain == "POINT"
         and attribute.data_type == "FLOAT_COLOR"
         and len(attribute.data) == len(output.data.vertices)
+        and size_attribute is not None
+        and size_attribute.domain == "POINT"
+        and size_attribute.data_type == "FLOAT"
+        and len(size_attribute.data) == len(output.data.vertices)
+        and level_attribute is not None
+        and level_attribute.domain == "POINT"
+        and level_attribute.data_type == "INT"
+        and len(level_attribute.data) == len(output.data.vertices)
     )
 
 
@@ -326,6 +395,7 @@ def refresh_preview_iter(
     )
     cache_key = core.preview_sampling_key(context, source, settings)
     cube_size = display_cube_size(settings)
+    cube_fill = display_cube_fill(settings)
     source_pointer = source.as_pointer()
 
     if (
@@ -338,7 +408,7 @@ def refresh_preview_iter(
         previous_cube_size = float(existing.get(CUBE_SIZE_TAG, cube_size))
         display_changed = abs(previous_cube_size - cube_size) > 1.0e-12
         if display_changed:
-            set_cube_size(existing, cube_size)
+            set_cube_size(existing, cube_fill)
             existing[CUBE_SIZE_TAG] = cube_size
         existing.matrix_world = source.matrix_world.copy()
         core.tag_output(existing, source, core.PREVIEW_KIND)
@@ -372,12 +442,23 @@ def refresh_preview_iter(
             elapsed_seconds=time.perf_counter() - started,
         )
 
-    centres, colours, point_count, used_image = yield from core.sample_surface_voxels_iter(
+    sample_result = yield from core.sample_surface_voxels_iter(
         context,
         source,
         settings,
         cache_key=cache_key,
     )
+    if isinstance(sample_result, core.VoxelSampleResult):
+        centres = sample_result.centres
+        colours = sample_result.colours
+        sizes = sample_result.sizes
+        levels = sample_result.levels
+        point_count = sample_result.count
+        used_image = sample_result.used_image
+    else:
+        centres, colours, point_count, used_image = sample_result
+        sizes = [float(settings.voxel_size)] * point_count
+        levels = [0] * point_count
     material = core.ensure_colour_material()
     output = existing
     if output is None:
@@ -394,7 +475,9 @@ def refresh_preview_iter(
             output,
             centres,
             colours,
-            cube_size,
+            sizes,
+            levels,
+            cube_fill,
             material,
         )
     except Exception:
@@ -407,7 +490,7 @@ def refresh_preview_iter(
 
     output.matrix_world = source.matrix_world.copy()
     core.tag_output(output, source, core.PREVIEW_KIND)
-    point_hash = _point_hash(centres, colours)
+    point_hash = _point_hash(centres, colours, sizes, levels)
     build_count = int(output.get(BUILD_COUNT_TAG, 0)) + 1
     output[CACHE_KEY_TAG] = cache_key
     output[POINT_HASH_TAG] = point_hash

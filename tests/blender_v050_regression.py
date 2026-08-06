@@ -112,6 +112,7 @@ def run():
     settings = bpy.context.scene.voxelizer_settings
     settings.source_scope = "ACTIVE"
     settings.grid_origin_mode = "OBJECT"
+    settings.sampling_mode = "UNIFORM"
     settings.use_sparse_candidates = True
     settings.sparse_grid_threshold = 0
     settings.voxel_size = 0.25

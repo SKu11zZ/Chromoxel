@@ -9,7 +9,7 @@ import stat
 import zipfile
 
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = stat.S_IFREG | 0o644
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +73,7 @@ def main() -> int:
     init_py = (SOURCE_ROOT / "__init__.py").read_text(encoding="utf-8")
     if f'version = "{VERSION}"' not in manifest:
         raise RuntimeError("manifest version does not match package version")
-    if '"version": (0, 5, 0)' not in init_py:
+    if '"version": (0, 6, 0)' not in init_py:
         raise RuntimeError("bl_info version does not match package version")
 
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
@@ -95,12 +95,14 @@ def main() -> int:
     (REPOSITORY_ROOT / "RELEASE_MANIFEST.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     (REPOSITORY_ROOT / "SHA256SUMS.txt").write_text(
         "".join(
             f"{item['sha256']}  {item['file']}\n" for item in report["artifacts"]
         ),
         encoding="utf-8",
+        newline="\n",
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
