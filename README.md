@@ -8,6 +8,35 @@
 
 [English](#english) · [简体中文](#简体中文)
 
+## Texture-detail adaptive upsampling / 纹理细节自适应上采样
+
+![Chromoxel training-range old, uniform, and texture-adaptive comparison](docs/images/chromoxel-training-range-old-vs-adaptive.png)
+
+**Chromoxel 0.6 does not force the entire scene to use 0.04 BU voxels.** It
+starts from a 0.16 BU base grid, measures texture-footprint contrast and
+geometric edge error, then selectively upsamples high-frequency regions such
+as bullseyes, circular markings, thin lines, and sharp colour boundaries to
+0.08 or 0.04 BU. Broad, low-detail areas remain coarser, concentrating the
+voxel and sampling budget where it contributes visible detail.
+
+**Chromoxel 0.6 不会把整个场景无差别压到 0.04 BU。** 它以 0.16 BU
+为基础网格，分析纹理足迹对比度和几何边缘误差，只对圆形靶纸、细线、锐利颜色边界等
+高频区域进行 0.08/0.04 BU 局部上采样；大面积低细节区域维持较粗体素，把体素数量和
+采样预算集中在真正影响画面的位置。
+
+The four panels use the same camera, KayKit scene, materials, lighting, and
+Cycles pipeline: **Original** (top-left), **old uniform 0.16 BU** (top-right),
+**Chromoxel 0.6 uniform 0.16 BU** (bottom-left), and **Chromoxel 0.6 adaptive,
+0.04 BU minimum** (bottom-right). The lower pair isolates the benefit of
+detail-aware upsampling from general version and render-pipeline differences.
+
+四格使用完全相同的相机、KayKit 场景、材质、光照和 Cycles 管线：左上为原始场景，
+右上为修复前的老版本统一 0.16 BU，左下为新版本统一 0.16 BU，右下为新版本自适应
+细分（最小 0.04 BU）。下排直接隔离了纹理细节上采样本身带来的提升。
+
+> Scene assets / 场景素材：**KayKit: Prototype Bits 1.1** by Kay Lousberg,
+> licensed under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+
 ![Chromoxel multi-model and multi-level voxelization comparison](docs/images/chromoxel-multi-model-multi-level-preview.png)
 
 > Four source meshes at coarse, medium, and fine voxel sizes. The comparison

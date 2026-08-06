@@ -18,6 +18,9 @@
 - Added a synthetic high-contrast bullseye regression covering diagonal ring
   retention, material auto-detection, adaptive budgets, symmetry, Preview, and
   Bake.
+- Added a bilingual four-panel KayKit training-range acceptance render that
+  isolates old Uniform 0.16 BU, new Uniform 0.16 BU, and adaptive 0.04 BU
+  minimum results under one Cycles pipeline.
 - Repaired the bilingual README and documented the remaining procedural-shader,
   UDIM, alpha-occupancy, GPU, and camera-LOD limits.
 

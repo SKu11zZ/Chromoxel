@@ -25,6 +25,20 @@ Date / 日期：2026-08-06
 - Bake produced realized cubes with CORNER colour and FACE size/level data.
 - Preview-to-Bake adaptive cache reuse passed.
 
+### KayKit training-range visual acceptance
+
+- The same 27-part scene, orthographic camera, materials, lighting, and Cycles
+  configuration were rendered in a four-panel comparison.
+- The archived old Uniform 0.16 BU result, Chromoxel 0.6 Uniform 0.16 BU, and
+  Chromoxel 0.6 Adaptive result were isolated from the original meshes before
+  rendering; no smooth source shell remains over a voxel result.
+- Uniform 0.16 BU produced 28,763 scene cells including repeated instances.
+  Adaptive used a 0.16 BU base with a 0.04 BU minimum and produced 76,650 cells.
+- Circular bullseyes and thin high-contrast markings remain visibly more
+  continuous in the 0.04 BU adaptive panel.
+- The final 1920×1080 Cycles/OptiX comparison passed visual review. Scene
+  assets are KayKit: Prototype Bits 1.1 by Kay Lousberg, CC0 1.0.
+
 ### Legacy and performance validation
 
 - Uniform mode passed the complete 0.5 regression for cube, UV sphere, stock
@@ -54,6 +68,9 @@ Date / 日期：2026-08-06
 - Bake 输出实际立方体，并写入角域颜色和面域尺寸/层级属性。
 - 旧版 Uniform 工作流、Suzanne 修复、NGON、批处理、缓存、取消、对称性和源对象不可变性回归通过。
 - 36,292 体素性能测试中，稀疏与完整网格占用完全一致，候选数量减少 79.13%。
+- KayKit 靶场四格使用同一套 27 部件场景、相机、材质、光照和 Cycles 管线；统一
+  0.16 BU 为 28,763 个场景体素，自适应以 0.16 BU 为基础、最小 0.04 BU，输出
+  76,650 个场景体素。右下圆形靶纸和细线纹理更连续，且不存在原模型覆盖体素的问题。
 
 The repository contains rendered comparison images produced for Chromoxel. It
 does not include KayKit source assets, private project files, local logs, or
