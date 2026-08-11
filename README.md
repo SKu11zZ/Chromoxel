@@ -56,6 +56,26 @@ detail-aware upsampling from general version and render-pipeline differences.
 > 四种源模型在粗、中、细三种体素尺寸下的对比，展示贴图颜色采样、精确对称闭包、
 > 曲面与锐边覆盖，以及凹 NGON 处理能力。
 
+### Character-scale voxel budgets / 角色级体素预算
+
+![Chromoxel character comparison at original, 2K, 20K, and 100K uniform voxel levels](docs/images/chromoxel-character-uniform-levels.png)
+
+> Three textured character meshes shown as the original and at approximately
+> 2K, 20K, and 100K uniform voxel budgets. This Chromoxel 0.7 CLI acceptance
+> image demonstrates progressive silhouette convergence, texture-colour
+> retention, and a consistent cell size within each 100K result. Target-count
+> fitting allows a tolerance of up to 5%. Chromoxel 0.8 preserves this output
+> contract while accelerating source preparation, sampling, and colour reads.
+>
+> 三个带纹理角色分别展示原始模型以及约 2K、20K、100K 的均匀体素预算结果。
+> 这张 Chromoxel 0.7 CLI 验收图展示了轮廓随体素预算逐级收敛、纹理颜色保留，
+> 以及每个 100K 结果内部一致的体素尺寸；目标数量拟合允许最多 5% 的误差。
+> Chromoxel 0.8 保持相同的输出约定，并加速源数据准备、采样和颜色读取。
+>
+> Character test assets / 角色测试素材：locally supplied Mixamo character
+> files used for validation. Only this rendered comparison is included; the
+> source meshes and textures are not redistributed.
+
 ![Chromoxel 0.6 bullseye texture-adaptive comparison](docs/images/chromoxel-adaptive-bullseye.png)
 
 > v0.6 visual acceptance: the uniform 0.50 BU grid misses most of the circular
