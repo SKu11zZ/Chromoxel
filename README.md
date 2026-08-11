@@ -86,6 +86,54 @@ platform-specific implementations under separate branches.
 | Blender | Blender 5.1 | Live preview, texture sampling, symmetry-safe grids, and Bake to Mesh | [Blender implementation](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
 | Unreal Engine | Unreal Engine 5.8 | Editor-side voxelization, BaseColor capture, and HISM scene preview | [Unreal implementation](https://github.com/SKu11zZ/Chromoxel/tree/unreal) |
 
+### Quick start
+
+#### Blender 5.1+
+
+1. Download `chromoxel-blender-0.8.0-extension.zip` from the
+   [Blender branch `dist`](https://github.com/SKu11zZ/Chromoxel/tree/blender/dist)
+   or a GitHub Release.
+2. In Blender, choose **Edit > Preferences > Add-ons > Install from Disk**,
+   select the ZIP, and enable **Chromoxel**.
+3. Create or import one or more Mesh objects, select them, then open
+   **3D Viewport > Sidebar (`N`) > Voxelizer**.
+4. Choose **Active**, **Selected**, or **Collection**; set **Voxel Size**, or
+   start with a Coarse, Medium, or Fine preset. Keep **Detail Mode: Adaptive**,
+   **Auto Material Images**, and **Auto Watertight Copy** enabled for the first
+   run.
+5. Click **Estimate Work**, then **Add / Update Chromoxel** to build the
+   editable point Preview. Keep **Compute Backend: Auto** unless a specific
+   CPU or GPU path is required.
+6. Select the Preview to edit, paint, add, move, or delete individual voxels.
+   For deterministic Cycles rendering or export, choose a **Bake Output** and
+   click **Bake to Mesh**.
+
+See the [complete Blender guide](https://github.com/SKu11zZ/Chromoxel/tree/blender#quick-start)
+for Bake modes, `.vox` interchange, CLI use, performance settings, and current
+limits.
+
+#### Unreal Engine 5.8
+
+1. Download `chromoxel-unreal-0.3.0-UE5.8-source.zip` from the
+   [Unreal branch `dist`](https://github.com/SKu11zZ/Chromoxel/tree/unreal/dist)
+   or a GitHub Release. Extract its `Chromoxel` folder to
+   `<YourProject>/Plugins/Chromoxel`.
+2. Regenerate project files, build the Win64 Editor target, enable
+   **Chromoxel**, and restart Unreal Editor if requested.
+3. Open the source level. Eligible inputs are visible, static,
+   collision-enabled Static Mesh, ISM, and HISM components. Select Actors or a
+   `Volume` first when using a scoped bake.
+4. Open **Tools > Chromoxel**, choose **Bake World**, **Bake Selected**, or
+   **Bake Selected Volume**, then use Fine, Standard, or Coarse for 10, 25, or
+   50 cm voxels.
+5. Open the generated map under `/Game/VoxelMapMVP/Maps`. Chromoxel also writes
+   a data asset, preview material, persistent HISM preview, and a JSON report
+   under `Saved/VoxelMapMVP`. The source level is not overwritten.
+
+BaseColor capture requires the Deferred renderer and a non-Null RHI. See the
+[complete Unreal guide](https://github.com/SKu11zZ/Chromoxel/tree/unreal#editor-workflow)
+for generated paths, commandlet use, supported components, and current limits.
+
 ### Shared goals
 
 - Preserve recognizable silhouettes, corners, holes, and thin features.
@@ -125,6 +173,46 @@ Chromoxel 探索一套实用工作流，将带贴图的模型与场景转换为�
 | --- | --- | --- | --- |
 | Blender | Blender 5.1 | 实时预览、贴图采样、对称安全网格和 Bake to Mesh | [Blender 实现](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
 | Unreal Engine | Unreal Engine 5.8 | 编辑器场景体素化、BaseColor 捕获和 HISM 场景预览 | [Unreal 实现](https://github.com/SKu11zZ/Chromoxel/tree/unreal) |
+
+### 快速上手
+
+#### Blender 5.1+
+
+1. 从 [Blender 分支的 `dist`](https://github.com/SKu11zZ/Chromoxel/tree/blender/dist)
+   或 GitHub Release 下载 `chromoxel-blender-0.8.0-extension.zip`。
+2. 在 Blender 中选择 **Edit > Preferences > Add-ons > Install from Disk**，
+   选择该 ZIP 并启用 **Chromoxel**。
+3. 创建或导入一个或多个 Mesh，选中后打开
+   **3D Viewport > Sidebar（`N`）> Voxelizer**。
+4. 选择 **Active**、**Selected** 或 **Collection**，设置 **Voxel Size**，
+   或先使用 Coarse、Medium、Fine 预设。首次运行建议保持
+   **Detail Mode: Adaptive**、**Auto Material Images** 和
+   **Auto Watertight Copy** 开启。
+5. 先点击 **Estimate Work**，再点击 **Add / Update Chromoxel**，生成可编辑的
+   点 Preview。一般保持 **Compute Backend: Auto**，只有需要固定计算路径时才手动选择
+   CPU 或 GPU。
+6. 选择 Preview 后，可以编辑、上色、添加、移动或删除单个体素。需要稳定用于 Cycles
+   渲染或导出时，选择 **Bake Output**，再点击 **Bake to Mesh**。
+
+完整的 Bake 模式、`.vox` 互换、CLI、性能参数和限制见
+[Blender 详细说明](https://github.com/SKu11zZ/Chromoxel/tree/blender#快速开始)。
+
+#### Unreal Engine 5.8
+
+1. 从 [Unreal 分支的 `dist`](https://github.com/SKu11zZ/Chromoxel/tree/unreal/dist)
+   或 GitHub Release 下载 `chromoxel-unreal-0.3.0-UE5.8-source.zip`，将其中的
+   `Chromoxel` 文件夹解压到 `<你的工程>/Plugins/Chromoxel`。
+2. 重新生成工程文件，构建 Win64 Editor Target，启用 **Chromoxel**，并按提示重启编辑器。
+3. 打开源关卡。可处理的输入为可见、Static、启用碰撞的 Static Mesh、ISM 和 HISM
+   组件；若要限定范围，先选中 Actor 或 `Volume`。
+4. 打开 **Tools > Chromoxel**，选择 **Bake World**、**Bake Selected** 或
+   **Bake Selected Volume**；Fine、Standard、Coarse 分别对应 10、25、50 cm 体素。
+5. 在 `/Game/VoxelMapMVP/Maps` 中打开生成的体素化地图。插件还会创建 Data Asset、
+   预览材质、持久化 HISM Preview，并在 `Saved/VoxelMapMVP` 写入 JSON 报告；
+   源关卡不会被覆盖。
+
+BaseColor 捕获需要 Deferred Renderer 和非 Null RHI。生成路径、Commandlet、支持范围与限制见
+[Unreal 详细说明](https://github.com/SKu11zZ/Chromoxel/tree/unreal#编辑器流程)。
 
 ### 共同目标
 
