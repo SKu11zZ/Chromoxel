@@ -2,7 +2,59 @@
 
 ## Blender 5.1.2 — PASS
 
-Date / 日期：2026-08-06
+Date / 日期：2026-08-11
+
+### Chromoxel 0.8 GPU and performance validation
+
+- Blender 5.1.2 created and dispatched the Chromoxel compute shader on the
+  `OPENGL / NVIDIA` backend in a normal interactive graphics context.
+- Nearest and bilinear GPU reads matched the CPU reference, including repeat
+  addressing and scene-linear sRGB conversion.
+- On the real CH14 4096×4096 Base Color image, 1,988 sampled voxel colours had
+  a maximum CPU/GPU component error of `2.67e-7` and a mean maximum-component
+  error of `1.11e-7`.
+- Background/headless `Auto` resolved to CPU without changing output. A 512 MiB
+  default VRAM ceiling bounds source textures plus UV/colour dispatch buffers;
+  oversized work falls back to CPU.
+- One reusable source session was used for each character's ~2K/~20K/~100K
+  levels. Target-fitting retries sampled occupancy only and performed colour
+  reconstruction once at the accepted size.
+- Three-level GPU sampling completed in 6.73 s (CH14), 9.98 s (CH15), and
+  7.65 s (CH46), versus 155.73-428.42 s on the archived repeated full-sampling
+  path. Counts were 1,988/19,744/99,469; 1,955/19,377/98,358; and
+  1,964/19,662/98,745 respectively.
+- A 100,000-point editable carrier wrote all required attributes in 0.32 s.
+  Editable operations, four Bake modes, adaptive sampling, `.vox` interchange,
+  and GPU fallback regressions all passed.
+- Blender's extension validator parsed the final 0.8.0 extension ZIP
+  successfully, and Blender imported, registered, and unregistered the legacy
+  ZIP directly without extraction.
+- Three 2560×800 Cycles/OptiX visual comparisons were rebuilt from the official
+  Realized Cubes Bake path. Colour, silhouettes, uniform cell size, and all
+  2K/20K/100K labels passed visual review. The saved project retains editable
+  POINT carriers; transient render meshes were removed after each frame.
+
+### Chromoxel 0.8 GPU 与性能验证
+
+- Blender 5.1.2 在普通交互式图形上下文中，通过 `OPENGL / NVIDIA` 后端实际创建并执行
+  Chromoxel 计算着色器。
+- GPU 最近点和双线性读取与 CPU 参考一致，包括重复寻址与 sRGB 到场景线性颜色转换。
+- 在 CH14 的真实 4096×4096 Base Color 贴图上，1,988 个体素颜色的 CPU/GPU 最大分量误差
+  为 `2.67e-7`，逐体素最大分量误差的平均值为 `1.11e-7`。
+- 后台模式的 `Auto` 会无损回退 CPU；默认 512 MiB 显存上限约束源纹理与 UV/颜色临时缓冲，
+  超限任务自动回退，不会强制申请显存。
+- 每个角色的约 2K/20K/100K 三档共用一个 Source Session；目标拟合只测试占用，并只在最终
+  接受尺寸执行一次颜色采样。
+- GPU 三档总采样耗时为 CH14 6.73 秒、CH15 9.98 秒、CH46 7.65 秒；旧重复完整采样路径为
+  155.73-428.42 秒。三组数量分别为 1,988/19,744/99,469、1,955/19,377/98,358、
+  1,964/19,662/98,745。
+- 10 万点载体的完整属性写入为 0.32 秒；编辑操作、四类 Bake、自适应采样、`.vox` 互换和
+  GPU 回退测试全部通过。
+- Blender 扩展验证器成功解析最终 0.8.0 Extension ZIP；Legacy ZIP 也通过了无需解压的直接
+  导入、注册和注销测试。
+- 三张 2560×800 Cycles/OptiX 验收图通过正式 Realized Cubes Bake 管线重建，颜色、轮廓、
+  统一体素尺寸及三档标签均通过视觉检查。保存工程继续保留可编辑 POINT 载体，临时渲染网格
+  在每帧结束后删除。
 
 ### Chromoxel 0.6 adaptive validation
 

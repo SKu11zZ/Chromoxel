@@ -6,6 +6,7 @@ __pycache__/
 !dist/
 !dist/*.zip
 .venv/
+build_validation/
 .idea/
 .vscode/
 Thumbs.db

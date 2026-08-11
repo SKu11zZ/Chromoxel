@@ -9,7 +9,7 @@ import stat
 import zipfile
 
 
-VERSION = "0.6.0"
+VERSION = "0.8.0"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = stat.S_IFREG | 0o644
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +20,15 @@ PACKAGE_FILES = tuple(
         (
             "__init__.py",
             "core.py",
+            "cli.py",
+            "editable.py",
+            "editor.py",
+            "gpu_backend.py",
+            "i18n.py",
             "preview.py",
             "live.py",
+            "meshing.py",
+            "vox_io.py",
             "PACKAGE_ID.txt",
             "blender_manifest.toml",
             "LICENSE.md",
@@ -73,7 +80,8 @@ def main() -> int:
     init_py = (SOURCE_ROOT / "__init__.py").read_text(encoding="utf-8")
     if f'version = "{VERSION}"' not in manifest:
         raise RuntimeError("manifest version does not match package version")
-    if '"version": (0, 6, 0)' not in init_py:
+    version_tuple = ", ".join(VERSION.split("."))
+    if f'"version": ({version_tuple})' not in init_py:
         raise RuntimeError("bl_info version does not match package version")
 
     DIST_ROOT.mkdir(parents=True, exist_ok=True)

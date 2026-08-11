@@ -1,0 +1,16 @@
+"""Thin Blender entry point for ``voxelizer.cli``."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from voxelizer.cli import main
+
+
+raise SystemExit(main())

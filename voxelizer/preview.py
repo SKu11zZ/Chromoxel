@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import struct
 import time
+from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 import bpy
+
+from . import editable
 
 
 TOOL_ID = "org.openai.textured_voxelizer_mvp"
@@ -252,8 +255,10 @@ def build_carrier_mesh(
             type="FLOAT_COLOR",
             domain="POINT",
         )
-        for datum, colour in zip(attribute.data, colour_values):
-            datum.color = colour
+        attribute.data.foreach_set(
+            "color",
+            array("f", (component for colour in colour_values for component in colour)),
+        )
         size_attribute = mesh.attributes.new(
             name=SIZE_ATTRIBUTE,
             type="FLOAT",
@@ -269,12 +274,12 @@ def build_carrier_mesh(
             type="FLOAT_VECTOR",
             domain="POINT",
         )
-        for datum, value in zip(size_attribute.data, size_values):
-            datum.value = value
-        for datum, value in zip(extent_attribute.data, extent_values):
-            datum.vector = value
-        for datum, value in zip(level_attribute.data, level_values):
-            datum.value = value
+        size_attribute.data.foreach_set("value", array("f", size_values))
+        extent_attribute.data.foreach_set(
+            "vector",
+            array("f", (component for extent in extent_values for component in extent)),
+        )
+        level_attribute.data.foreach_set("value", array("i", level_values))
         mesh.update()
     except Exception:
         bpy.data.meshes.remove(mesh)
@@ -476,14 +481,28 @@ def refresh_preview_iter(
         extents = sample_result.extents
         levels = sample_result.levels
         point_count = sample_result.count
+        source_uvs = sample_result.source_uvs or [(0.0, 0.0)] * point_count
         used_image = sample_result.used_image
     else:
         centres, colours, point_count, used_image = sample_result
         sizes = [float(settings.voxel_size)] * point_count
         extents = [(float(settings.voxel_size),) * 3] * point_count
         levels = [0] * point_count
+        source_uvs = [(0.0, 0.0)] * point_count
     material = core.ensure_colour_material()
     output = existing
+    was_editable = editable.is_editable(existing)
+    edit_operations = editable.load_delta(existing) if was_editable else []
+    preserved_grid_size = (
+        float(existing.get(editable.GRID_SIZE_TAG, 0.0))
+        if was_editable
+        else 0.0
+    )
+    preserved_grid_origin = (
+        tuple(existing.get(editable.GRID_ORIGIN_TAG, (0.0, 0.0, 0.0)))
+        if was_editable
+        else None
+    )
     if output is None:
         empty_mesh = bpy.data.meshes.new(f"{name}_Carrier")
         output = core.link_output(
@@ -504,6 +523,27 @@ def refresh_preview_iter(
             cube_fill,
             material,
         )
+        if was_editable:
+            output[editable.GRID_SIZE_TAG] = preserved_grid_size
+            output[editable.GRID_ORIGIN_TAG] = preserved_grid_origin
+        editable.initialize_carrier(output, reset_delta=not was_editable)
+        source_uv_attribute = output.data.attributes.get(editable.SOURCE_UV_ATTRIBUTE)
+        if source_uv_attribute is not None:
+            source_uv_attribute.data.foreach_set(
+                "vector",
+                array("f", (component for value in source_uvs for component in value)),
+            )
+        if edit_operations:
+            base_records = editable.records_from_object(output)
+            edited_records = editable.apply_delta(
+                base_records,
+                edit_operations,
+                grid_origin=tuple(output[editable.GRID_ORIGIN_TAG]),
+                grid_size=float(output[editable.GRID_SIZE_TAG]),
+            )
+            editable.replace_records(output, edited_records)
+            editable.save_delta(output, edit_operations)
+            point_count = len(edited_records)
     except Exception:
         if existing is None and output.name in bpy.data.objects:
             failed_mesh = output.data

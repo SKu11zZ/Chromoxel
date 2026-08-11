@@ -247,7 +247,10 @@ def run():
     require(cache_stats["entries"] >= 2, cache_stats)
     require(cache_stats["bytes"] > 0, cache_stats)
     require(bpy.ops.voxelizer.clear_cache() == {"FINISHED"}, "clear cache failed")
-    require(core.sampling_cache_stats() == {"entries": 0, "bytes": 0}, "cache not cleared")
+    require(
+        all(value == 0 for value in core.sampling_cache_stats().values()),
+        "cache not cleared",
+    )
 
     report = {
         "status": "PASS",

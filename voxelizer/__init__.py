@@ -7,6 +7,7 @@ import time
 import bpy
 from bpy.props import (
     BoolProperty,
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -16,13 +17,13 @@ from bpy.props import (
 )
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import core, live, preview
+from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview, vox_io
 
 
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 6, 0),
+    "version": (0, 8, 0),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -60,6 +61,15 @@ def _voxel_size_changed(settings, context) -> None:
 
 
 class VOXELIZER_PG_settings(PropertyGroup):
+    ui_language: EnumProperty(
+        name="UI Language",
+        items=(
+            ("AUTO", "Auto", "Follow Blender interface language"),
+            ("EN", "English", "Use English Chromoxel labels"),
+            ("ZH", "中文", "使用中文 Chromoxel 标签"),
+        ),
+        default="AUTO",
+    )
     source_scope: EnumProperty(
         name="Source Scope",
         description="Choose which mesh objects Preview and Bake process",
@@ -271,6 +281,38 @@ class VOXELIZER_PG_settings(PropertyGroup):
         default="BILINEAR",
         update=_geometry_setting_changed,
     )
+    compute_backend: EnumProperty(
+        name="Compute Backend",
+        description="Choose CPU sampling or GPU batch texture sampling with automatic fallback",
+        items=(
+            ("AUTO", "Auto", "Use GPU when an interactive compute context is available"),
+            ("GPU", "GPU", "Request GPU batch sampling and fall back safely when unavailable"),
+            ("CPU", "CPU", "Use the deterministic CPU sampling path"),
+        ),
+        default="AUTO",
+        update=_geometry_setting_changed,
+    )
+    gpu_batch_size: IntProperty(
+        name="GPU Batch Size",
+        description="Maximum UV samples submitted per bounded GPU dispatch",
+        default=65_536,
+        min=1_024,
+        max=1_000_000,
+        subtype="UNSIGNED",
+        update=_geometry_setting_changed,
+    )
+    gpu_memory_limit_mb: IntProperty(
+        name="GPU Memory Limit (MiB)",
+        description=(
+            "Upper bound for cached source textures and temporary UV/colour "
+            "buffers; oversized jobs fall back to CPU"
+        ),
+        default=512,
+        min=64,
+        max=8192,
+        subtype="UNSIGNED",
+        update=_geometry_setting_changed,
+    )
     fallback_color: FloatVectorProperty(
         name="Fallback Color",
         description="Colour used when no valid image/UV sample is available",
@@ -280,6 +322,47 @@ class VOXELIZER_PG_settings(PropertyGroup):
         max=1.0,
         default=(0.18, 0.48, 0.8, 1.0),
         update=_geometry_setting_changed,
+    )
+    color_mode: EnumProperty(
+        name="Edit Color Mode",
+        items=(
+            ("DIRECT", "Direct Color", "Store unrestricted per-voxel colours"),
+            ("PALETTE", "Palette", "Reference editable palette/material slots"),
+        ),
+        default="DIRECT",
+    )
+    edit_color: FloatVectorProperty(
+        name="Edit Color",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(0.18, 0.48, 0.8, 1.0),
+    )
+    edit_material_id: IntProperty(name="Material ID", default=0, min=0)
+    edit_roughness: FloatProperty(name="Roughness", default=0.5, min=0.0, max=1.0)
+    edit_metallic: FloatProperty(name="Metallic", default=0.0, min=0.0, max=1.0)
+    edit_emission: FloatProperty(name="Emission", default=0.0, min=0.0, soft_max=25.0)
+    palette_slots: CollectionProperty(type=editor.VOXELIZER_PG_palette_slot)
+    palette_active_index: IntProperty(name="Palette Slot", default=0, min=0, max=254)
+    bake_mode: EnumProperty(
+        name="Bake Output",
+        items=(
+            ("EDITABLE", "Editable Points", "Duplicate the editable point carrier"),
+            ("REALIZED", "Realized Cubes", "Build one independent cube per voxel"),
+            ("SURFACE", "Surface Mesh", "Remove hidden faces between atomic voxels"),
+            ("GREEDY", "Greedy Mesh", "Merge compatible coplanar voxel faces"),
+        ),
+        default="REALIZED",
+    )
+    vox_import_size: FloatProperty(
+        name="VOX Unit Size",
+        description="Blender-unit size assigned to one imported VOX cell",
+        default=0.1,
+        min=0.0001,
+        soft_max=10.0,
+        precision=4,
+        unit="LENGTH",
     )
     use_sparse_candidates: BoolProperty(
         name="Sparse Surface Candidates",
@@ -311,10 +394,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     voxel_budget: IntProperty(
         name="Voxel Limit",
-        description="Maximum occupied surface voxels produced for one source",
-        default=250_000,
+        description="Maximum editable surface voxels produced for one source model",
+        default=100_000,
         min=1_000,
-        max=10_000_000,
+        max=100_000,
     )
     sampling_chunk_size: IntProperty(
         name="Task Chunk",
@@ -622,6 +705,64 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
 
     def _job_iter(self, context):
         settings = context.scene.voxelizer_settings
+        editable_sources = [
+            output for output in context.selected_objects
+            if editable.is_editable(output)
+        ]
+        if editable_sources:
+            self._batch_total = len(editable_sources)
+            outputs = []
+            total_voxels = 0
+            for index, source in enumerate(editable_sources):
+                self._batch_index = index
+                mode = settings.bake_mode
+                name = f"{source.name}_{mode}"
+                core.assert_name_available(name)
+                if mode == "EDITABLE":
+                    output = source.copy()
+                    output.data = source.data.copy()
+                    output.name = name
+                    collection = source.users_collection[0] if source.users_collection else context.collection
+                    collection.objects.link(output)
+                    count = len(output.data.vertices)
+                else:
+                    mesh, count = meshing.build_from_editable(
+                        source,
+                        mode,
+                        f"{name}_Mesh",
+                        fill_ratio=preview.display_cube_fill(settings),
+                    )
+                    output = core.link_output(
+                        context,
+                        source,
+                        mesh,
+                        name,
+                        core.BAKE_KIND,
+                    )
+                output.matrix_world = source.matrix_world.copy()
+                output.hide_render = False
+                output["chromoxel_bake_mode"] = mode
+                output["chromoxel_atomic_voxel_count"] = int(count)
+                outputs.append(output)
+                total_voxels += count
+                self._completed_items += 1
+                yield core.SamplingProgress(
+                    "BAKE_GEOMETRY",
+                    index + 1,
+                    len(editable_sources),
+                    f"Built {mode.title()} output for {source.name}",
+                )
+            for selected in tuple(context.selected_objects):
+                selected.select_set(False)
+            for output in outputs:
+                output.select_set(True)
+            if outputs:
+                context.view_layer.objects.active = outputs[-1]
+            return (
+                f"Built {len(outputs)} {settings.bake_mode.lower()} output(s), "
+                f"{total_voxels:,} atomic voxels."
+            )
+
         sources = core.source_objects(context, settings)
         self._batch_total = len(sources)
         for source in sources:
@@ -825,6 +966,154 @@ class VOXELIZER_PT_panel(Panel):
         colour_box.prop(settings, "texture_filter")
         colour_box.prop(settings, "fallback_color")
 
+        edit_box = layout.box()
+        edit_box.label(
+            text=editor.translated(context, "Voxel Edit", "体素编辑"),
+            icon="EDITMODE_HLT",
+        )
+        edit_box.prop(settings, "ui_language")
+        if editable.is_editable(source):
+            diagnostics = editable.validate_editable(source)
+            edit_box.label(
+                text=(
+                    f"{diagnostics['voxels']:,} voxels | "
+                    f"{diagnostics['chunks']:,} chunks | "
+                    f"grid {diagnostics['grid_size']:.4g} BU"
+                ),
+                icon=(
+                    "CHECKMARK"
+                    if diagnostics["duplicate_coordinates"] == 0
+                    and diagnostics["within_model_limit"]
+                    else "ERROR"
+                ),
+            )
+            if not diagnostics["within_model_limit"]:
+                edit_box.label(
+                    text=editor.translated(
+                        context,
+                        "Over 100,000 points: split into multiple models",
+                        "超过 100,000 点：请拆分为多个模型",
+                    ),
+                    icon="ERROR",
+                )
+            row = edit_box.row(align=True)
+            row.operator(
+                editor.VOXELIZER_OT_enter_edit.bl_idname,
+                text=editor.translated(context, "Enter Edit", "进入编辑"),
+                icon="EDITMODE_HLT",
+            )
+            row.operator(
+                editor.VOXELIZER_OT_exit_edit.bl_idname,
+                text=editor.translated(context, "Exit Edit", "退出编辑"),
+                icon="OBJECT_DATAMODE",
+            )
+            edit_box.operator(
+                editor.VOXELIZER_OT_revoxelize_edits.bl_idname,
+                text=editor.translated(
+                    context,
+                    "Re-voxelize + Replay Edits",
+                    "重新体素化并重放编辑",
+                ),
+                icon="FILE_REFRESH",
+            )
+            row = edit_box.row(align=True)
+            for action, label_en, label_zh in (
+                ("ALL", "All", "全选"),
+                ("NONE", "None", "取消"),
+                ("INVERT", "Invert", "反选"),
+            ):
+                operator = row.operator(
+                    editor.VOXELIZER_OT_select.bl_idname,
+                    text=editor.translated(context, label_en, label_zh),
+                )
+                operator.action = action
+            edit_box.operator(editor.VOXELIZER_OT_box_select.bl_idname, icon="BORDER_RECT")
+            row = edit_box.row(align=True)
+            row.operator(editor.VOXELIZER_OT_add_cursor.bl_idname, icon="ADD")
+            row.operator(editor.VOXELIZER_OT_delete_selected.bl_idname, icon="REMOVE")
+            move_grid = edit_box.grid_flow(columns=3, align=True)
+            for delta, label in (
+                ((-1, 0, 0), "-X"), ((1, 0, 0), "+X"),
+                ((0, -1, 0), "-Y"), ((0, 1, 0), "+Y"),
+                ((0, 0, -1), "-Z"), ((0, 0, 1), "+Z"),
+            ):
+                operator = move_grid.operator(editor.VOXELIZER_OT_move_selected.bl_idname, text=label)
+                operator.delta = delta
+            row = edit_box.row(align=True)
+            row.operator(editor.VOXELIZER_OT_pick_selected.bl_idname, icon="EYEDROPPER")
+            row.operator(editor.VOXELIZER_OT_paint_selected.bl_idname, icon="BRUSH_DATA")
+            row.operator(editor.VOXELIZER_OT_flood_fill.bl_idname, icon="UV_SYNC_SELECT")
+            select_grid = edit_box.grid_flow(columns=2, align=True)
+            for mode, label_en, label_zh in (
+                ("COLOR", "Same Color", "同颜色"),
+                ("MATERIAL", "Same Material", "同材质"),
+                ("LEVEL", "Same Level", "同等级"),
+                ("CONNECTED", "Connected", "连通区域"),
+                ("COLOR_CONNECTED", "Color Region", "颜色区域"),
+            ):
+                operator = select_grid.operator(
+                    editor.VOXELIZER_OT_select_similar.bl_idname,
+                    text=editor.translated(context, label_en, label_zh),
+                )
+                operator.mode = mode
+            row = edit_box.row(align=True)
+            for axis in "XYZ":
+                operator = row.operator(editor.VOXELIZER_OT_mirror_selected.bl_idname, text=f"Mirror {axis}")
+                operator.axis = axis
+            row = edit_box.row(align=True)
+            row.operator(editor.VOXELIZER_OT_copy_voxels.bl_idname, icon="COPYDOWN")
+            row.operator(editor.VOXELIZER_OT_paste_voxels.bl_idname, icon="PASTEDOWN")
+        else:
+            edit_box.label(
+                text=editor.translated(
+                    context,
+                    "Create or select a Chromoxel Preview",
+                    "请创建或选择 Chromoxel 预览",
+                ),
+                icon="INFO",
+            )
+
+        material_box = layout.box()
+        material_box.label(
+            text=editor.translated(context, "Voxel Color & Material", "体素颜色与材质"),
+            icon="MATERIAL",
+        )
+        material_box.prop(settings, "color_mode", expand=True)
+        if editable.is_editable(source):
+            material_box.operator(editor.VOXELIZER_OT_palette_generate.bl_idname, icon="COLOR")
+        if settings.color_mode == "DIRECT":
+            material_box.prop(settings, "edit_color")
+            material_box.prop(settings, "edit_material_id")
+            material_box.prop(settings, "edit_roughness")
+            material_box.prop(settings, "edit_metallic")
+            material_box.prop(settings, "edit_emission")
+        else:
+            material_box.template_list(
+                "UI_UL_list", "chromoxel_palette", settings, "palette_slots",
+                settings, "palette_active_index", rows=3,
+            )
+            row = material_box.row(align=True)
+            row.operator(editor.VOXELIZER_OT_palette_add.bl_idname, icon="ADD", text="")
+            row.operator(editor.VOXELIZER_OT_palette_remove.bl_idname, icon="REMOVE", text="")
+            if settings.palette_slots:
+                palette_index = min(settings.palette_active_index, len(settings.palette_slots) - 1)
+                slot = settings.palette_slots[palette_index]
+                material_box.prop(slot, "name")
+                material_box.prop(slot, "color")
+                material_box.prop(slot, "roughness")
+                material_box.prop(slot, "metallic")
+                material_box.prop(slot, "emission")
+                material_box.operator(editor.VOXELIZER_OT_palette_update_linked.bl_idname)
+
+        vox_box = layout.box()
+        vox_box.label(text="MagicaVoxel .vox", icon="FILE_3D")
+        vox_box.prop(settings, "vox_import_size")
+        row = vox_box.row(align=True)
+        row.operator(vox_io.VOXELIZER_OT_import_vox.bl_idname, icon="IMPORT")
+        export_row = row.row(align=True)
+        export_row.enabled = editable.is_editable(source)
+        export_row.operator(vox_io.VOXELIZER_OT_export_vox.bl_idname, icon="EXPORT")
+
         advanced_box = layout.box()
         advanced_box.prop(
             settings,
@@ -845,6 +1134,18 @@ class VOXELIZER_PT_panel(Panel):
             advanced_box.prop(settings, "voxel_budget")
             advanced_box.prop(settings, "sampling_chunk_size")
             advanced_box.prop(settings, "cache_memory_mb")
+            advanced_box.prop(settings, "compute_backend", expand=True)
+            if settings.compute_backend != "CPU":
+                advanced_box.prop(settings, "gpu_batch_size")
+                advanced_box.prop(settings, "gpu_memory_limit_mb")
+                decision = gpu_backend.resolve_backend(settings.compute_backend)
+                advanced_box.label(
+                    text=(
+                        f"{decision.used}: {decision.backend or decision.reason}"
+                        + (f" / {decision.device}" if decision.device else "")
+                    ),
+                    icon="RENDER_RESULT" if decision.used == "GPU" else "INFO",
+                )
             row = advanced_box.row(align=True)
             row.operator(VOXELIZER_OT_clear_cache.bl_idname, icon="X")
             stats = core.sampling_cache_stats()
@@ -872,6 +1173,7 @@ class VOXELIZER_PT_panel(Panel):
         action_column.enabled = not settings.task_running
         action_column.operator(VOXELIZER_OT_preview.bl_idname, icon="MOD_NODES")
         action_column.label(text="Preview stays editable through its Geometry Nodes modifier.")
+        action_column.prop(settings, "bake_mode")
         action_column.operator(VOXELIZER_OT_bake.bl_idname, icon="MESH_CUBE")
         action_column.operator(VOXELIZER_OT_clear.bl_idname, icon="TRASH")
 
@@ -895,6 +1197,7 @@ class VOXELIZER_PT_panel(Panel):
 
 
 CLASSES = (
+    editor.VOXELIZER_PG_palette_slot,
     VOXELIZER_PG_settings,
     VOXELIZER_OT_quality_preset,
     VOXELIZER_OT_estimate,
@@ -904,14 +1207,22 @@ CLASSES = (
     VOXELIZER_OT_clear_cache,
     VOXELIZER_OT_clear,
     VOXELIZER_OT_live_toggle,
+    *editor.CLASSES[1:],
+    *vox_io.CLASSES,
     VOXELIZER_PT_panel,
 )
 
 
 def register():
+    i18n.register()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.voxelizer_settings = PointerProperty(type=VOXELIZER_PG_settings)
+    bpy.types.Scene.voxelizer_clipboard = StringProperty(
+        name="Chromoxel Clipboard",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
     live.register_handlers()
 
 
@@ -920,8 +1231,11 @@ def unregister():
     preview.clear_runtime_cache()
     if hasattr(bpy.types.Scene, "voxelizer_settings"):
         del bpy.types.Scene.voxelizer_settings
+    if hasattr(bpy.types.Scene, "voxelizer_clipboard"):
+        del bpy.types.Scene.voxelizer_clipboard
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
+    i18n.unregister()
 
 
 if __name__ == "__main__":

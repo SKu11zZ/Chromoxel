@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.6.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1
+**Version / 版本：** 0.8.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -71,9 +71,66 @@ detail-aware upsampling from general version and render-pipeline differences.
 
 ## English
 
-Chromoxel converts selected meshes into coloured surface-voxel shells. It
-provides a lightweight Geometry Nodes preview for iteration and a realized
-**Bake to Mesh** result for Cycles rendering, export, and downstream editing.
+Chromoxel converts selected meshes into coloured surface-voxel shells. Its
+Geometry Nodes point Preview is now a durable editable voxel model, with four
+Bake targets and MagicaVoxel `.vox` interchange.
+
+### What is new in 0.8
+
+- **Auto / GPU / CPU compute backends.** Uniform texture colour reconstruction
+  can run through a real Blender compute shader in an interactive GPU context;
+  unsupported and headless sessions fall back to the matching CPU result.
+- A reusable source session keeps the evaluated mesh, repair proxy, symmetry
+  proof, BVHs, triangle/UV state, and float image buffers across voxel levels.
+- Target fitting now measures occupancy first and reads texture colour only
+  once for the accepted resolution, instead of repeating full sampling during
+  every fit attempt.
+- Image transfer and Blender attributes use bulk float buffers. Editable point
+  carriers and baked face attributes no longer perform one RNA assignment per
+  value.
+- GPU batches are bounded, and a configurable VRAM ceiling defaults to 512 MiB.
+  Oversized textures fall back to CPU rather than exceeding the selected cap.
+- The greedy Bake seed scan is deterministic O(P log P), replacing the former
+  quadratic repeated-minimum search on highly varied textured surfaces.
+- The CLI accepts `--compute-backend`, `--gpu-batch-size`, and
+  `--gpu-memory-limit-mb`, and target-count requests allow ±5% fitting.
+
+Measured sampling time for one character across approximately 2K, 20K, and
+100K uniform levels (same workstation and source assets):
+
+| Character | Previous path | 0.8 CPU | 0.8 GPU |
+| --- | ---: | ---: | ---: |
+| CH14 | 155.73 s | 7.74 s | 6.73 s |
+| CH15 | 428.42 s | 10.24 s | 9.98 s |
+| CH46 | 344.31 s | 8.52 s | 7.65 s |
+
+The GPU currently accelerates batched texture reads. Occupancy generation,
+BVH nearest-surface queries, UV mapping, and adaptive error analysis remain on
+the CPU, so total GPU gain depends on how texture-heavy the source is.
+
+### What is new in 0.7
+
+- Edit Preview points without realizing the displayed cube instances: select,
+  box-select, add, delete, move, mirror, copy/paste, eyedrop, paint, flood fill,
+  and select by colour, material, level, or connectivity.
+- Re-voxelize the linked source and replay non-destructive edits by exact
+  minimum-grid integer coordinates. A moved voxel overwrites its destination.
+- Use unrestricted direct colour or an editable 255-slot palette. Palette
+  slots carry Base Color, Roughness, Metallic, and Emission and can update all
+  linked voxels.
+- Bake as editable points, realized cubes, an internal-face-culled surface
+  mesh, or a material-aware greedy mesh.
+- Import and export MagicaVoxel `.vox` v150/v200 data. Adaptive cells flatten
+  to minimum cells, colours are deterministically quantized when necessary,
+  and coordinates spanning more than 256 cells are stored as scene blocks.
+- Every Preview point carries stable `voxel_id`, integer grid coordinates,
+  level, size/extent, colour, palette/material IDs, source UV, PBR values, and
+  a deterministic 32³ spatial `chunk_id`.
+- The supported editable-model ceiling is 100,000 points. Work is partitioned
+  into 32³ spatial chunks with a 65,536-point processing batch ceiling.
+- Added an English/Chinese UI selector and Blender 5.1.2 background regressions
+  for exact replay, textured UV data, Bake modes, VOX blocks, palette
+  quantization, and the 100,000-point ceiling.
 
 ### What is new in 0.6
 
@@ -115,14 +172,14 @@ provides a lightweight Geometry Nodes preview for iteration and a realized
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.6.0-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.8.0-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.6.0.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.8.0.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -136,7 +193,12 @@ top-level `voxelizer` directory inside the archive.
    automatic material discovery is not the desired source.
 7. Keep **Auto Watertight Copy** enabled for open or non-manifold meshes.
 8. Click **Estimate Work**, then **Add / Update Chromoxel**.
-9. Use **Bake to Mesh** for a realized Cycles/export result.
+9. Select the Preview to use **Voxel Edit**, palette tools, or `.vox` export.
+10. Choose a **Bake Output**, then use **Bake to Mesh** for Cycles/export.
+
+Under **Advanced**, keep **Compute Backend: Auto** for normal interactive use.
+Set a smaller **GPU Memory Limit** for constrained GPUs; any oversized batch
+automatically uses CPU sampling.
 
 With a base size of `0.16 BU` and detail level 2, Chromoxel can keep broad flat
 areas at `0.16`, refine sharp or textured regions to `0.08`, and refine the
@@ -166,8 +228,13 @@ allowing every hard-surface edge to expand through all levels.
 
 | Mode | Best for | Output |
 | --- | --- | --- |
-| Preview | Interactive look development | POINT carrier with variable-size Geometry Nodes cube instances |
-| Bake to Mesh | Cycles, export, and final editing | Realized cubes with colour, size, and level attributes |
+| Editable Points | Iteration and voxel editing | POINT carrier with variable-size Geometry Nodes cube instances |
+| Realized Cubes | Independent cube editing | One cube mesh island per adaptive voxel |
+| Surface Mesh | Rendering/export at lower face count | Minimum-cell shell with hidden faces removed |
+| Greedy Mesh | Compact static output | Compatible coplanar faces merged |
+
+Editable Points is an authoring Preview. For deterministic colour in Cycles or
+external export, use Realized Cubes, Surface Mesh, or Greedy Mesh Bake.
 
 Output attributes:
 
@@ -177,9 +244,29 @@ Output attributes:
   display gap is applied; flat refined cells may be thinner in two axes only.
 - `voxel_level`: `0` for the base grid, `1` for half size, `2` for quarter size,
   and so on.
+- `voxel_id`, `grid_x/y/z`, `palette_index`, `material_id`, and `chunk_id`:
+  stable editing, palette, material, and spatial-partition identifiers.
+- `source_uv`, `voxel_roughness`, `voxel_metallic`, and `voxel_emission`:
+  sampled source coordinates and editable PBR properties.
 
 Preview and Bake share cached occupancy, colour, size, and level samples when
 their geometry, grid, material, image, adaptive, and budget inputs match.
+
+### CLI
+
+Run the wrapper through Blender. Arguments after `--` belong to Chromoxel:
+
+```powershell
+blender --background --factory-startup --python tools/chromoxel_cli.py -- `
+  --input character.fbx --output character_voxels.blend `
+  --target-voxels 100000 --target-tolerance 0.05 `
+  --sampling uniform --bake-mode editable `
+  --compute-backend auto --gpu-batch-size 65536 `
+  --gpu-memory-limit-mb 512 --report character_voxels.json
+```
+
+Blender background mode has no interactive graphics context, so `auto` falls
+back to CPU. Use a normal Blender session when the compute backend must be GPU.
 
 ### Symmetry behavior
 
@@ -192,14 +279,16 @@ geometric asymmetry.
 
 ### Current limits
 
-- CPU BVH/grid/refinement sampling; GPU voxelization is not implemented yet.
+- GPU acceleration currently covers Uniform-mode texture reads; occupancy,
+  BVH/UV mapping, Adaptive analysis, and mesh construction remain CPU work.
 - Surface shell only; the interior is not filled as a solid volume.
 - Automatic material discovery supports UV-driven images upstream of a
   Principled Base Color input. The manual Image Override remains available.
 - Procedural shader baking, UDIM tile sampling, alpha-cutout occupancy, sparse
   bricks, clipmaps, and camera-dependent LOD are not implemented yet.
-- Default per-source limits are 1,500,000 sampling/refinement tests and 250,000
-  output voxels. Advanced settings can change these limits and cache memory.
+- One editable model supports up to 100,000 points. Spatial chunk metadata is
+  retained for large-model processing; split larger assets before authoring at
+  minimum voxel size.
 
 ### Compatibility identity
 
@@ -216,6 +305,11 @@ blender --background --factory-startup --python tests/release_smoke.py
 blender --background --factory-startup --python tests/blender_v050_regression.py
 blender --background --factory-startup --python tests/blender_v050_performance.py
 blender --background --factory-startup --python tests/blender_v060_adaptive.py
+blender --background --factory-startup --python tests/blender_v070_editable.py
+blender --background --factory-startup --python tests/blender_v070_scale_interchange.py
+blender --background --factory-startup --python tests/blender_v080_performance.py
+# GPU parity needs a normal Blender window / graphics context:
+blender --factory-startup --python tests/blender_v080_gpu_compute.py
 ```
 
 See [VALIDATION.md](VALIDATION.md) for the verified Blender version and release
@@ -233,9 +327,48 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 
 ## 简体中文
 
-Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。插件提供轻量级
-Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实体网格，用于 Cycles
-渲染、导出和后续编辑。
+Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
+现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
+
+### 0.8 新功能
+
+- 新增 **Auto / GPU / CPU 计算后端**。在交互式 GPU 上下文中，Uniform 模式的纹理颜色
+  重建会运行真实的 Blender 计算着色器；后台模式或不支持的环境会自动回退到等价 CPU 结果。
+- 新增可复用 Source Session，在多个体素等级之间共用求值网格、修复代理、对称证明、BVH、
+  三角形/UV 数据和浮点贴图缓冲。
+- 目标数量拟合先仅计算占用，只在最终接受的分辨率读取一次纹理，不再为每次迭代重复完整采样。
+- 图片读取、可编辑点属性和 Bake 面属性改为批量缓冲传输，避免逐值写入 Blender RNA。
+- GPU 批次受控，并提供默认 512 MiB 的显存上限；超出上限的贴图会安全回退 CPU。
+- Greedy Bake 的起始面搜索从重复全表扫描改为确定性的 O(P log P) 排序扫描。
+- CLI 新增 `--compute-backend`、`--gpu-batch-size` 和 `--gpu-memory-limit-mb`，目标数量
+  支持 ±5% 容差。
+
+同一工作站、同一素材，每个角色连续生成约 2K、20K、100K 三档的采样耗时：
+
+| 角色 | 旧路径 | 0.8 CPU | 0.8 GPU |
+| --- | ---: | ---: | ---: |
+| CH14 | 155.73 秒 | 7.74 秒 | 6.73 秒 |
+| CH15 | 428.42 秒 | 10.24 秒 | 9.98 秒 |
+| CH46 | 344.31 秒 | 8.52 秒 | 7.65 秒 |
+
+当前 GPU 主要加速批量纹理读取；占用生成、BVH 最近点、UV 映射和自适应误差分析仍在 CPU，
+因此总加速幅度会随素材的纹理工作量变化。
+
+### 0.7 新功能
+
+- 无需实体化预览立方体即可编辑点数据：支持点选、框选、添加、删除、移动、镜像、复制粘贴、
+  吸色、上色、洪水填充，以及按颜色、材质、层级或连通区域选择。
+- 重新体素化后按最小体素的整数网格坐标准确重放非破坏编辑；移动冲突采用新体素覆盖旧体素。
+- 支持无限制直接颜色和最多 255 槽的调色板模式；调色板包含 Base Color、Roughness、
+  Metallic、Emission，并可联动更新所有引用体素。
+- 可 Bake 为可编辑点、实体立方体、删除内部面的表面网格或按材质合并的贪心网格。
+- 支持 MagicaVoxel `.vox` v150/v200 导入导出；自适应体素会展开为最小单元，超量颜色会
+  确定性量化，超过 256 单元的坐标通过场景块保存。
+- Preview 保存稳定的 `voxel_id`、整数网格坐标、层级、尺寸/范围、颜色、调色板/材质 ID、
+  源 UV、PBR 参数和确定性的 32³ 空间 `chunk_id`。
+- 单个可编辑模型上限为 100,000 点；内部按 32³ 空间块及最多 65,536 点的处理批次组织。
+- 新增中英文界面选择，并在 Blender 5.1.2 中验证坐标重放、贴图 UV、四类 Bake、VOX
+  跨块、调色板量化和 10 万点规模。
 
 ### 0.6 新功能
 
@@ -267,14 +400,14 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.6.0-extension.zip`。
+   `chromoxel-blender-0.8.0-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.6.0.zip`。
+`chromoxel-blender-0.8.0.zip`。
 
 ### 快速开始
 
@@ -287,7 +420,11 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
    **Image Override**。
 7. 对开放或非流形模型保持 **Auto Watertight Copy** 开启。
 8. 点击 **Estimate Work**，再点击 **Add / Update Chromoxel**。
-9. 最终 Cycles 渲染或导出时使用 **Bake to Mesh**。
+9. 选择 Preview 后可使用 **Voxel Edit**、调色板工具或导出 `.vox`。
+10. 选择 **Bake Output**，再点击 **Bake to Mesh** 用于 Cycles 或导出。
+
+普通交互使用可在 **Advanced** 中保持 **Compute Backend: Auto**。显存较小的显卡可下调
+**GPU Memory Limit**；超出限制时会自动改用 CPU，不会强行申请显存。
 
 例如基础尺寸为 `0.16 BU`、细分级别为 2 时，普通平面可保持 `0.16`，锐边或纹理区域
 自动进入 `0.08`，误差最大的纹理边界自动进入 `0.04`，不需要逐个物体设置。
@@ -308,8 +445,13 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
 
 | 模式 | 适用场景 | 输出 |
 | --- | --- | --- |
-| Preview | 交互式外观调整 | 带可变尺寸立方体实例的 POINT 载体 |
-| Bake to Mesh | Cycles、导出和最终编辑 | 带颜色、尺寸与层级属性的实体立方体 |
+| 可编辑点 | 迭代与体素编辑 | 带可变尺寸 Geometry Nodes 立方体实例的 POINT 载体 |
+| 实体立方体 | 单独编辑立方体 | 每个自适应体素对应一个网格岛 |
+| 表面网格 | 低面数渲染/导出 | 删除隐藏内部面的最小单元外壳 |
+| 贪心网格 | 紧凑静态输出 | 合并材质兼容的共面面片 |
+
+可编辑点用于创作预览；需要在 Cycles 或外部软件中稳定获得颜色时，请使用实体立方体、
+表面网格或贪心网格 Bake。
 
 输出属性：
 
@@ -318,9 +460,28 @@ Geometry Nodes 预览用于迭代，也可以通过 **Bake to Mesh** 生成实�
 - `voxel_extent`：应用比例显示间隙之前的实际 XYZ 尺寸；平面细分体素只会在两个
   表面方向缩小，法线厚度保持稳定。
 - `voxel_level`：基础层为 `0`，半尺寸为 `1`，四分之一尺寸为 `2`，依次类推。
+- `voxel_id`、`grid_x/y/z`、`palette_index`、`material_id`、`chunk_id`：用于稳定编辑、
+  调色板、材质和空间分块。
+- `source_uv`、`voxel_roughness`、`voxel_metallic`、`voxel_emission`：源采样坐标与可编辑 PBR 参数。
 
 当几何、网格、材质、图片、自适应设置和预算一致时，Preview 与 Bake 会复用同一份占用、
 颜色、尺寸和层级缓存。
+
+### CLI
+
+通过 Blender 调用包装脚本，`--` 之后是 Chromoxel 参数：
+
+```powershell
+blender --background --factory-startup --python tools/chromoxel_cli.py -- `
+  --input character.fbx --output character_voxels.blend `
+  --target-voxels 100000 --target-tolerance 0.05 `
+  --sampling uniform --bake-mode editable `
+  --compute-backend auto --gpu-batch-size 65536 `
+  --gpu-memory-limit-mb 512 --report character_voxels.json
+```
+
+Blender 后台模式没有交互式图形上下文，因此 `auto` 会安全回退 CPU；需要计算着色器时请在
+普通 Blender 会话中运行。
 
 ### 对称性行为
 
@@ -331,12 +492,12 @@ Chromoxel 根据顶点对应关系及镜像后的边/多边形拓扑，分别证
 
 ### 当前限制
 
-- 当前采用 CPU BVH、网格和细分采样，尚未实现 GPU 体素化。
+- GPU 当前加速 Uniform 模式的纹理读取；占用、BVH/UV 映射、自适应分析和网格构建仍由 CPU 完成。
 - 只生成表面体素壳，不填充内部体积。
 - 自动材质识别支持连接到 Principled Base Color 上游、使用 UV 的图片节点；仍可手动覆盖图片。
 - 尚未实现程序化 Shader 自动烘焙、UDIM、基于 Alpha 的占用、稀疏 Brick、Clipmap 和相机相关 LOD。
-- 默认每个源对象最多执行 1,500,000 次采样/细分测试并输出 250,000 个体素；可在 Advanced
-  中调整上限和缓存内存。
+- 单个可编辑模型最高支持 100,000 点。空间分块元数据会被保留；超大资产需要在使用最小体素
+  尺寸创作前拆分为多个模型。
 
 ### 兼容性标识
 
@@ -353,6 +514,11 @@ blender --background --factory-startup --python tests/release_smoke.py
 blender --background --factory-startup --python tests/blender_v050_regression.py
 blender --background --factory-startup --python tests/blender_v050_performance.py
 blender --background --factory-startup --python tests/blender_v060_adaptive.py
+blender --background --factory-startup --python tests/blender_v070_editable.py
+blender --background --factory-startup --python tests/blender_v070_scale_interchange.py
+blender --background --factory-startup --python tests/blender_v080_performance.py
+# GPU 颜色一致性测试需要普通 Blender 窗口 / 图形上下文：
+blender --factory-startup --python tests/blender_v080_gpu_compute.py
 ```
 
 已验证的 Blender 版本和发布检查见 [VALIDATION.md](VALIDATION.md)。

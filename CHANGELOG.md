@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.0 - 2026-08-11
+
+- Added Auto/GPU/CPU compute backends for batched image sampling. Interactive
+  sessions use a real Blender compute shader; background/headless work and
+  unsupported contexts fall back to the colour-equivalent CPU path.
+- Added configurable GPU batch and VRAM limits. Oversized source textures fall
+  back safely instead of exceeding the selected memory budget.
+- Added reusable source sessions for evaluated meshes, diagnostics, symmetry
+  proofs, repair helpers, BVHs, triangle/UV state, and image buffers.
+- Changed target-count fitting to use occupancy-only trials and sample texture
+  colour once at the accepted voxel size.
+- Replaced scalar image reads and per-element Blender RNA writes with bulk
+  `foreach_get`/`foreach_set` buffers.
+- Replaced the quadratic greedy-face seed search with one deterministic sorted
+  scan and batched all baked face attributes.
+- Added Blender 5.1 GPU nearest/bilinear parity tests, CPU fallback tests, and
+  three Mixamo benchmarks at approximately 2K/20K/100K voxels.
+- Reduced the measured three-level sampling workload from 156-428 seconds per
+  character to 6.7-10.0 seconds on the validated workstation GPU workflow.
+
+## 0.7.0 - 2026-08-11
+
+- Upgraded Preview carriers into durable editable point models with stable IDs,
+  minimum-grid coordinates, spatial chunk IDs, sampled UVs, palette/material
+  references, and editable PBR attributes.
+- Added selection, add/delete/move, mirror, copy/paste, eyedropper/paint, flood
+  fill, linked palette editing, and exact-coordinate edit replay after source
+  re-voxelization.
+- Added editable-point, realized-cube, internal-face-culled surface, and
+  material-aware greedy Bake outputs.
+- Added MagicaVoxel `.vox` v150/v200 import/export with adaptive-cell
+  flattening, deterministic 255-colour quantization, material subset mapping,
+  and multi-block scene transforms.
+- Added English/Chinese UI support and deterministic release packaging for all
+  new modules.
+- Validated textured `source_uv` capture, four Bake attributes, exact edit
+  replay, the 100,000-point per-model ceiling, 32³ chunks, VOX block replay,
+  and palette quantization in Blender 5.1.2.
+
 ## 0.6.0 - 2026-08-06
 
 - Added budget-bounded, power-of-two adaptive surface refinement driven by

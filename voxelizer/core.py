@@ -11,10 +11,12 @@ import json
 import math
 import re
 import struct
+import time
+from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from typing import Iterable, Iterator, Optional
 
@@ -22,6 +24,8 @@ import bmesh
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+
+from . import gpu_backend
 
 
 TOOL_ID = "org.openai.textured_voxelizer_mvp"
@@ -55,6 +59,8 @@ _AXIS_NAMES = ("X", "Y", "Z")
 _LAST_SAMPLING_DIAGNOSTICS: dict[int, dict[str, object]] = {}
 _SAMPLE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SAMPLE_CACHE_BYTES = 0
+_IMAGE_BUFFER_CACHE: OrderedDict[tuple[object, ...], "_ImageBuffer"] = OrderedDict()
+_IMAGE_BUFFER_CACHE_BYTES = 0
 
 
 class VoxelizerError(RuntimeError):
@@ -92,6 +98,7 @@ class VoxelSampleResult:
     extents: list[Vector]
     levels: list[int]
     used_image: bool
+    source_uvs: list[tuple[float, float]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -109,6 +116,7 @@ class _ColourAnalysis:
     colour: tuple[float, ...]
     texture_error: float
     geometry_angle: float
+    source_uv: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass
@@ -120,6 +128,7 @@ class _VoxelCell:
     colour: tuple[float, ...]
     texture_error: float
     geometry_angle: float
+    source_uv: tuple[float, float] = (0.0, 0.0)
 
     def error_score(self, texture_threshold: float, geometry_angle: float) -> float:
         texture_score = self.texture_error / max(texture_threshold, 1.0e-9)
@@ -157,15 +166,20 @@ def cache_budget_bytes(settings) -> int:
 
 
 def clear_sampling_cache() -> None:
-    global _SAMPLE_CACHE_BYTES
+    global _SAMPLE_CACHE_BYTES, _IMAGE_BUFFER_CACHE_BYTES
     _SAMPLE_CACHE.clear()
     _SAMPLE_CACHE_BYTES = 0
+    _IMAGE_BUFFER_CACHE.clear()
+    _IMAGE_BUFFER_CACHE_BYTES = 0
+    gpu_backend.clear_runtime_cache()
 
 
 def sampling_cache_stats() -> dict[str, int]:
     return {
         "entries": len(_SAMPLE_CACHE),
         "bytes": int(_SAMPLE_CACHE_BYTES),
+        "image_entries": len(_IMAGE_BUFFER_CACHE),
+        "image_bytes": int(_IMAGE_BUFFER_CACHE_BYTES),
     }
 
 
@@ -183,6 +197,7 @@ def _cache_put(
     sizes: Iterable[float],
     extents: Iterable[Iterable[float]],
     levels: Iterable[int],
+    source_uvs: Iterable[Iterable[float]],
     used_image: bool,
     diagnostics: dict[str, object],
     settings,
@@ -202,12 +217,17 @@ def _cache_put(
         for extent in extents
     )
     level_values = tuple(int(value) for value in levels)
+    source_uv_values = tuple(
+        tuple(float(component) for component in value)
+        for value in source_uvs
+    )
     if not (
         len(centre_values)
         == len(colour_values)
         == len(size_values)
         == len(extent_values)
         == len(level_values)
+        == len(source_uv_values)
     ):
         raise VoxelizerError("Cached voxel arrays have inconsistent lengths.")
     estimated_bytes = len(centre_values) * 120
@@ -226,6 +246,7 @@ def _cache_put(
         "sizes": size_values,
         "extents": extent_values,
         "levels": level_values,
+        "source_uvs": source_uv_values,
         "used_image": bool(used_image),
         "diagnostics": json.loads(json.dumps(diagnostics)),
         "estimated_bytes": estimated_bytes,
@@ -861,13 +882,16 @@ def _image_fingerprint(image: Optional[bpy.types.Image]) -> bytes:
     try:
         width, height = (int(value) for value in image.size)
         digest.update(struct.pack("<II", width, height))
-        pixels = image.pixels
-        pixel_count = len(pixels)
+        pixel_count = len(image.pixels)
         digest.update(struct.pack("<Q", pixel_count))
-        if pixel_count:
-            stride = max(1, pixel_count // 512)
-            for index in range(0, pixel_count, stride):
-                digest.update(struct.pack("<f", float(pixels[index])))
+        # Indexed RNA pixel reads are exceptionally expensive for 4K/8K images
+        # (hundreds of scalar probes can take tens of seconds).  Blender's ID
+        # update flags plus the explicit Clear Cache action provide bounded
+        # invalidation without touching individual pixels here.
+        digest.update(b"\x01" if bool(getattr(image, "is_updated", False)) else b"\x00")
+        digest.update(b"\x01" if bool(getattr(image, "is_updated_data", False)) else b"\x00")
+        packed = getattr(image, "packed_file", None)
+        digest.update(struct.pack("<Q", int(getattr(packed, "size", 0) or 0)))
     except (AttributeError, RuntimeError, TypeError, ValueError):
         digest.update(b"UNREADABLE")
     return digest.digest()
@@ -965,6 +989,15 @@ def preview_sampling_key(
         float(getattr(settings, "adaptive_geometry_angle", 35.0)),
     ))
     digest.update(str(getattr(settings, "texture_filter", "BILINEAR")).encode("ascii"))
+    digest.update(str(getattr(settings, "compute_backend", "AUTO")).encode("ascii"))
+    digest.update(struct.pack(
+        "<I",
+        _setting_int(settings, "gpu_batch_size", 65_536, 1_024),
+    ))
+    digest.update(struct.pack(
+        "<I",
+        _setting_int(settings, "gpu_memory_limit_mb", 512, 64),
+    ))
     digest.update(struct.pack(
         "<3Q",
         sample_budget(settings),
@@ -1416,8 +1449,25 @@ def ensure_colour_material() -> bpy.types.Material:
     shader = nodes.new("ShaderNodeBsdfPrincipled")
     colour = nodes.new("ShaderNodeVertexColor")
     colour.layer_name = COLOUR_ATTRIBUTE
+    roughness = nodes.new("ShaderNodeAttribute")
+    roughness.attribute_name = "voxel_roughness"
+    metallic = nodes.new("ShaderNodeAttribute")
+    metallic.attribute_name = "voxel_metallic"
+    emission = nodes.new("ShaderNodeAttribute")
+    emission.attribute_name = "voxel_emission"
     links.new(colour.outputs["Color"], shader.inputs["Base Color"])
     links.new(colour.outputs["Alpha"], shader.inputs["Alpha"])
+    if shader.inputs.get("Roughness") is not None:
+        links.new(roughness.outputs["Fac"], shader.inputs["Roughness"])
+    if shader.inputs.get("Metallic") is not None:
+        links.new(metallic.outputs["Fac"], shader.inputs["Metallic"])
+    emission_color = shader.inputs.get("Emission Color")
+    if emission_color is None:
+        emission_color = shader.inputs.get("Emission")
+    if emission_color is not None:
+        links.new(colour.outputs["Color"], emission_color)
+    if shader.inputs.get("Emission Strength") is not None:
+        links.new(emission.outputs["Fac"], shader.inputs["Emission Strength"])
     links.new(shader.outputs["BSDF"], output.inputs["Surface"])
     material.diffuse_color = (0.18, 0.48, 0.8, 1.0)
     return material
@@ -1546,14 +1596,26 @@ class _ImageBuffer:
         self.extension = extension if extension in {"REPEAT", "EXTEND", "CLIP"} else "REPEAT"
         self.width = 0
         self.height = 0
-        self.pixels: tuple[float, ...] = ()
+        self.pixels = array("f")
         try:
             self.width, self.height = (int(value) for value in image.size)
             if self.width > 0 and self.height > 0:
-                self.pixels = tuple(float(value) for value in image.pixels[:])
+                pixel_count = self.width * self.height * 4
+                values = array("f", [0.0]) * pixel_count
+                pixels = image.pixels
+                try:
+                    pixels.foreach_get(values)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    values = array("f", pixels[:])
+                if len(values) >= pixel_count:
+                    self.pixels = values
         except (AttributeError, RuntimeError, TypeError, ValueError):
             self.width = self.height = 0
-            self.pixels = ()
+            self.pixels = array("f")
+
+    @property
+    def estimated_bytes(self) -> int:
+        return len(self.pixels) * self.pixels.itemsize
 
     @property
     def valid(self) -> bool:
@@ -1617,6 +1679,36 @@ class _ImageBuffer:
         )
 
 
+def _cached_image_buffer(
+    image: bpy.types.Image,
+    extension: str,
+    budget_bytes: int,
+) -> _ImageBuffer:
+    """Reuse immutable float32 snapshots across sizes and sampling sessions."""
+
+    global _IMAGE_BUFFER_CACHE_BYTES
+    key = (
+        int(image.as_pointer()),
+        str(extension),
+        _image_fingerprint(image),
+    )
+    cached = _IMAGE_BUFFER_CACHE.get(key)
+    if cached is not None:
+        _IMAGE_BUFFER_CACHE.move_to_end(key)
+        return cached
+
+    buffer = _ImageBuffer(image, extension)
+    size = buffer.estimated_bytes
+    budget_bytes = max(16 * 1024 * 1024, int(budget_bytes))
+    if buffer.valid and size <= budget_bytes:
+        while _IMAGE_BUFFER_CACHE and _IMAGE_BUFFER_CACHE_BYTES + size > budget_bytes:
+            _old_key, old = _IMAGE_BUFFER_CACHE.popitem(last=False)
+            _IMAGE_BUFFER_CACHE_BYTES -= old.estimated_bytes
+        _IMAGE_BUFFER_CACHE[key] = buffer
+        _IMAGE_BUFFER_CACHE_BYTES += size
+    return buffer
+
+
 class ColourSampler:
     """Material-aware UV sampler with filtered footprint error estimation."""
 
@@ -1629,6 +1721,7 @@ class ColourSampler:
         *,
         auto_material_images: bool = True,
         filter_mode: str = "BILINEAR",
+        image_cache_budget_bytes: int = DEFAULT_CACHE_MEMORY_MB * 1024 * 1024,
     ):
         self.mesh = mesh
         self.fallback = tuple(float(component) for component in fallback)
@@ -1664,7 +1757,11 @@ class ColourSampler:
                 buffer_key = (selected_image.as_pointer(), extension)
                 buffer = self._buffers.get(buffer_key)
                 if buffer is None:
-                    buffer = _ImageBuffer(selected_image, extension)
+                    buffer = _cached_image_buffer(
+                        selected_image,
+                        extension,
+                        image_cache_budget_bytes,
+                    )
                     self._buffers[buffer_key] = buffer
                 if not buffer.valid:
                     buffer = None
@@ -1755,17 +1852,17 @@ class ColourSampler:
         point: Vector,
         polygon_index: int,
         cell_size: float,
-    ) -> tuple[list[tuple[float, ...]], tuple[float, ...]]:
+    ) -> tuple[list[tuple[float, ...]], tuple[float, ...], tuple[float, float]]:
         data = self._triangle_sample_data(point, polygon_index)
         if data is None:
-            return [self.fallback], self.fallback
+            return [self.fallback], self.fallback, (0.0, 0.0)
         triangle, _weights, buffer, uv_data, flat_colour = data
         if buffer is None or uv_data is None:
-            return [flat_colour], flat_colour
+            return [flat_colour], flat_colour, (0.0, 0.0)
         uv, uvs = uv_data
         if cell_size <= 0.0:
             centre_colour = self._read(buffer, uv) or flat_colour
-            return [centre_colour], centre_colour
+            return [centre_colour], centre_colour, (float(uv.x), float(uv.y))
         vertices = [self.mesh.vertices[index].co for index in triangle.vertices]
         u_scale = 0.0
         v_scale = 0.0
@@ -1790,7 +1887,7 @@ class ColourSampler:
                 if sampled is not None:
                     samples.append(sampled)
         centre_colour = self._read(buffer, uv) or flat_colour
-        return samples or [centre_colour], centre_colour
+        return samples or [centre_colour], centre_colour, (float(uv.x), float(uv.y))
 
     def _build_edge_features(self):
         edge_polygons: dict[tuple[int, int], list[int]] = {}
@@ -1834,7 +1931,11 @@ class ColourSampler:
         return maximum
 
     def analyse(self, point: Vector, polygon_index: int, cell_size: float) -> _ColourAnalysis:
-        samples, centre_colour = self._footprint_samples(point, polygon_index, cell_size)
+        samples, centre_colour, source_uv = self._footprint_samples(
+            point,
+            polygon_index,
+            cell_size,
+        )
         if len(samples) <= 1:
             texture_error = 0.0
         else:
@@ -1850,6 +1951,7 @@ class ColourSampler:
             colour=centre_colour,
             texture_error=float(texture_error),
             geometry_angle=self._geometry_angle(point, polygon_index, cell_size),
+            source_uv=source_uv,
         )
 
     def analyse_nearest(self, query_point: Vector, cell_size: float) -> _ColourAnalysis:
@@ -1861,8 +1963,317 @@ class ColourSampler:
         location, _normal, polygon_index, _distance = nearest
         return self.analyse(location, polygon_index, cell_size)
 
+    def _map_uniform_nearest(self, query_point: Vector):
+        """Map one point to an image/UV without reading a texture pixel."""
+
+        if self.source_bvh is None:
+            return None, (0.0, 0.0), self.fallback
+        nearest = self.source_bvh.find_nearest(query_point)
+        if nearest is None or nearest[0] is None or nearest[2] is None:
+            return None, (0.0, 0.0), self.fallback
+        location, _normal, polygon_index, _distance = nearest
+        data = self._triangle_sample_data(location, polygon_index)
+        if data is None:
+            return None, (0.0, 0.0), self.fallback
+        _triangle, _weights, buffer, uv_data, flat_colour = data
+        if buffer is None or uv_data is None:
+            return None, (0.0, 0.0), flat_colour
+        uv, _uvs = uv_data
+        return buffer, (float(uv.x), float(uv.y)), flat_colour
+
+    def analyse_nearest_batch(
+        self,
+        query_points: Iterable[Vector],
+        *,
+        requested_backend: str = "AUTO",
+        gpu_batch_size: int = 65_536,
+        gpu_memory_limit_mb: int = 512,
+    ) -> tuple[list[_ColourAnalysis], dict[str, object]]:
+        """Resolve UVs on CPU, then batch texture reads on the selected backend."""
+
+        points = list(query_points)
+        mapped = [self._map_uniform_nearest(point) for point in points]
+        colours: list[tuple[float, ...] | None] = [None] * len(mapped)
+        uvs = [value[1] for value in mapped]
+        groups: dict[_ImageBuffer, list[tuple[int, tuple[float, float]]]] = {}
+        for index, (buffer, uv, flat_colour) in enumerate(mapped):
+            if buffer is None:
+                colours[index] = flat_colour
+            else:
+                groups.setdefault(buffer, []).append((index, uv))
+
+        decision = gpu_backend.resolve_backend(requested_backend)
+        used_gpu = False
+        reasons = [decision.reason]
+        for buffer, entries in groups.items():
+            sampled = None
+            group_decision = decision
+            if decision.used == "GPU":
+                sampled, group_decision = gpu_backend.sample_image(
+                    buffer.image,
+                    (uv for _index, uv in entries),
+                    extension=buffer.extension,
+                    filter_mode=self.filter_mode,
+                    requested=requested_backend,
+                    batch_size=gpu_batch_size,
+                    source_pixels=buffer.pixels,
+                    memory_limit_mb=gpu_memory_limit_mb,
+                )
+                reasons.append(group_decision.reason)
+            if sampled is not None:
+                used_gpu = True
+                for (index, _uv), colour in zip(entries, sampled):
+                    colours[index] = colour
+            else:
+                for index, uv in entries:
+                    colours[index] = self._read(buffer, Vector(uv)) or mapped[index][2]
+
+        analyses = [
+            _ColourAnalysis(
+                colour=tuple(colour or self.fallback),
+                texture_error=0.0,
+                geometry_angle=0.0,
+                source_uv=uv,
+            )
+            for colour, uv in zip(colours, uvs)
+        ]
+        return analyses, {
+            "requested": str(requested_backend).upper(),
+            "used": "GPU" if used_gpu else "CPU",
+            "available": bool(decision.available),
+            "backend": decision.backend,
+            "device": decision.device,
+            "groups": len(groups),
+            "samples": len(points),
+            "reason": "; ".join(dict.fromkeys(reasons)),
+        }
+
     def sample_nearest_original(self, query_point: Vector):
         return self.analyse_nearest(query_point, 0.0).colour
+
+
+@dataclass
+class SourceSamplingSession:
+    """Prepared source data reused while one model is sampled at many sizes."""
+
+    source_pointer: int
+    source_name: str
+    source_mesh: bpy.types.Mesh
+    source_symmetry: dict[str, object]
+    sampling_object: bpy.types.Object
+    sampling_mesh: bpy.types.Mesh
+    sampling_symmetry: dict[str, object]
+    bvh: BVHTree
+    sampler: ColourSampler
+    bounds_min: Vector
+    bounds_max: Vector
+    helper_rebuilt: bool
+    base_key: str
+    timings: dict[str, float]
+    closed: bool = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        meshes = [self.source_mesh]
+        if self.sampling_mesh is not self.source_mesh:
+            meshes.append(self.sampling_mesh)
+        for mesh in meshes:
+            try:
+                if bpy.data.meshes.get(mesh.name) is mesh and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+            except (ReferenceError, RuntimeError):
+                pass
+
+
+def _session_base_key(mesh: bpy.types.Mesh, settings) -> str:
+    digest = hashlib.sha256()
+    digest.update(source_signature(mesh, 0.0).encode("ascii"))
+    digest.update(_colour_inputs_fingerprint(mesh, settings))
+    digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
+    digest.update(b"\x01" if bool(settings.auto_watertight_copy) else b"\x00")
+    return digest.hexdigest()
+
+
+def _session_sampling_key(session: SourceSamplingSession, settings) -> str:
+    """Build a size/settings key without rehashing source geometry or pixels."""
+
+    digest = hashlib.sha256(session.base_key.encode("ascii"))
+    digest.update(struct.pack("<d", float(settings.voxel_size)))
+    digest.update(str(getattr(settings, "grid_origin_mode", "BOUNDS")).encode("ascii"))
+    digest.update(struct.pack(
+        "<3d",
+        *(float(value) for value in getattr(settings, "grid_origin", (0.0, 0.0, 0.0))),
+    ))
+    digest.update(b"\x01" if bool(getattr(settings, "use_sparse_candidates", True)) else b"\x00")
+    digest.update(struct.pack(
+        "<I",
+        _setting_int(settings, "sparse_grid_threshold", 50_000, 0),
+    ))
+    digest.update(str(getattr(settings, "sampling_mode", "UNIFORM")).encode("ascii"))
+    digest.update(struct.pack(
+        "<3I2d",
+        ADAPTIVE_SCHEMA_VERSION,
+        _setting_int(settings, "adaptive_max_level", 0, 0),
+        _setting_int(settings, "adaptive_geometry_max_level", 1, 0),
+        float(getattr(settings, "adaptive_texture_threshold", 0.16)),
+        float(getattr(settings, "adaptive_geometry_angle", 35.0)),
+    ))
+    digest.update(str(getattr(settings, "texture_filter", "BILINEAR")).encode("ascii"))
+    digest.update(str(getattr(settings, "compute_backend", "AUTO")).encode("ascii"))
+    digest.update(struct.pack(
+        "<5Q",
+        sample_budget(settings),
+        voxel_budget(settings),
+        _setting_int(
+            settings,
+            "candidate_expansion_budget",
+            sample_budget(settings) * 32,
+            sample_budget(settings),
+        ),
+        _setting_int(settings, "gpu_batch_size", 65_536, 1_024),
+        _setting_int(settings, "gpu_memory_limit_mb", 512, 64),
+    ))
+    return digest.hexdigest()
+
+
+def prepare_sampling_session(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+) -> SourceSamplingSession:
+    """Prepare immutable mesh snapshots, diagnostics, BVHs, and texture state."""
+
+    validate_settings(settings)
+    timings: dict[str, float] = {}
+    source_snapshot = None
+    sampling_snapshot = None
+    started_total = time.perf_counter()
+    try:
+        started = time.perf_counter()
+        with evaluated_local_mesh(context, source) as source_mesh:
+            timings["evaluated_source"] = time.perf_counter() - started
+            started = time.perf_counter()
+            source_diagnostics = mesh_diagnostics(source_mesh)
+            timings["source_diagnostics"] = time.perf_counter() - started
+            started = time.perf_counter()
+            source_symmetry = reflection_symmetry_diagnostics(source_mesh)
+            timings["source_symmetry"] = time.perf_counter() - started
+            started = time.perf_counter()
+            sampling_object, helper_rebuilt = ensure_sampling_object(
+                context,
+                source,
+                settings,
+                source_mesh=source_mesh,
+                source_diagnostics=source_diagnostics,
+                source_symmetry=source_symmetry,
+            )
+            timings["sampling_helper"] = time.perf_counter() - started
+            started = time.perf_counter()
+            source_snapshot = source_mesh.copy()
+            timings["source_snapshot"] = time.perf_counter() - started
+
+        if sampling_object is source:
+            sampling_snapshot = source_snapshot
+        else:
+            started = time.perf_counter()
+            with evaluated_local_mesh(context, sampling_object) as sampling_mesh:
+                sampling_snapshot = sampling_mesh.copy()
+            timings["sampling_snapshot"] = time.perf_counter() - started
+
+        assert source_snapshot is not None and sampling_snapshot is not None
+        started = time.perf_counter()
+        sampling_symmetry = reflection_symmetry_diagnostics(sampling_snapshot)
+        symmetry_preserved, missing_axes = _required_axes_preserved(
+            source_symmetry,
+            sampling_symmetry,
+        )
+        timings["sampling_symmetry"] = time.perf_counter() - started
+        if not symmetry_preserved:
+            raise VoxelizerError(
+                "Sampling geometry does not preserve proved source reflection "
+                f"symmetry on axis/axes: {', '.join(missing_axes)}."
+            )
+
+        started = time.perf_counter()
+        sampling_vertices = [vertex.co.copy() for vertex in sampling_snapshot.vertices]
+        sampling_polygons = [tuple(polygon.vertices) for polygon in sampling_snapshot.polygons]
+        bvh = BVHTree.FromPolygons(
+            sampling_vertices,
+            sampling_polygons,
+            all_triangles=False,
+        )
+        timings["sampling_bvh"] = time.perf_counter() - started
+        if bvh is None:
+            raise VoxelizerError("Could not build a surface acceleration structure.")
+
+        started = time.perf_counter()
+        sampler = ColourSampler(
+            source_snapshot,
+            settings.uv_map,
+            settings.base_color_image,
+            settings.fallback_color,
+            auto_material_images=bool(getattr(settings, "auto_material_images", True)),
+            filter_mode=str(getattr(settings, "texture_filter", "BILINEAR")),
+            image_cache_budget_bytes=cache_budget_bytes(settings),
+        )
+        timings["colour_sampler"] = time.perf_counter() - started
+
+        started = time.perf_counter()
+        bounds_min = Vector(tuple(
+            min(vertex.co[axis] for vertex in sampling_snapshot.vertices)
+            for axis in range(3)
+        ))
+        bounds_max = Vector(tuple(
+            max(vertex.co[axis] for vertex in sampling_snapshot.vertices)
+            for axis in range(3)
+        ))
+        # The session owns immutable snapshots, so an ephemeral identity is
+        # sufficient and avoids hashing the full geometry/UV payload again.
+        base_key = hashlib.sha256(
+            f"{source.as_pointer()}:{source.name}:{started_total:.17g}".encode("utf-8")
+        ).hexdigest()
+        timings["bounds_and_key"] = time.perf_counter() - started
+        timings["total"] = time.perf_counter() - started_total
+        return SourceSamplingSession(
+            source_pointer=source.as_pointer(),
+            source_name=source.name,
+            source_mesh=source_snapshot,
+            source_symmetry=source_symmetry,
+            sampling_object=sampling_object,
+            sampling_mesh=sampling_snapshot,
+            sampling_symmetry=sampling_symmetry,
+            bvh=bvh,
+            sampler=sampler,
+            bounds_min=bounds_min,
+            bounds_max=bounds_max,
+            helper_rebuilt=helper_rebuilt,
+            base_key=base_key,
+            timings=timings,
+        )
+    except Exception:
+        meshes = [mesh for mesh in (source_snapshot, sampling_snapshot) if mesh is not None]
+        for mesh in dict.fromkeys(meshes):
+            try:
+                if bpy.data.meshes.get(mesh.name) is mesh and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+            except (ReferenceError, RuntimeError):
+                pass
+        raise
+
+
+@contextmanager
+def sampling_session(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+) -> Iterator[SourceSamplingSession]:
+    session = prepare_sampling_session(context, source, settings)
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 _CUBE_CORNERS = (
@@ -2192,6 +2603,7 @@ def _adaptive_refine_cells_iter(
                         colour=analysis.colour,
                         texture_error=analysis.texture_error,
                         geometry_angle=analysis.geometry_angle,
+                        source_uv=analysis.source_uv,
                     )
                     generated[_cell_key(child.centre, child.size)] = child
             if not generated:
@@ -2271,41 +2683,47 @@ def _sample_surface_voxels_from_meshes_iter(
     sampling_object: bpy.types.Object,
     helper_rebuilt: bool,
     sampling_mesh: bpy.types.Mesh,
+    session: Optional[SourceSamplingSession] = None,
+    occupancy_only: bool = False,
 ) -> Iterator[SamplingProgress]:
     """Incrementally sample while evaluated mesh leases remain live."""
 
-    sampling_symmetry = reflection_symmetry_diagnostics(sampling_mesh)
-    symmetry_preserved, missing_axes = _required_axes_preserved(
-        source_symmetry,
-        sampling_symmetry,
-    )
-    if not symmetry_preserved:
-        raise VoxelizerError(
-            "Sampling geometry does not preserve proved source reflection "
-            f"symmetry on axis/axes: {', '.join(missing_axes)}."
+    if session is not None:
+        if session.closed or session.source_pointer != source.as_pointer():
+            raise VoxelizerError("Sampling session is closed or belongs to another source.")
+        sampling_symmetry = session.sampling_symmetry
+        bvh = session.bvh
+        bounds_min = session.bounds_min
+        bounds_max = session.bounds_max
+    else:
+        sampling_symmetry = reflection_symmetry_diagnostics(sampling_mesh)
+        symmetry_preserved, missing_axes = _required_axes_preserved(
+            source_symmetry,
+            sampling_symmetry,
         )
-    sampling_vertices = [vertex.co.copy() for vertex in sampling_mesh.vertices]
-    sampling_polygons = [tuple(polygon.vertices) for polygon in sampling_mesh.polygons]
-    bvh = BVHTree.FromPolygons(
-        sampling_vertices,
-        sampling_polygons,
-        all_triangles=False,
-    )
-    if bvh is None:
-        raise VoxelizerError("Could not build a surface acceleration structure.")
+        if not symmetry_preserved:
+            raise VoxelizerError(
+                "Sampling geometry does not preserve proved source reflection "
+                f"symmetry on axis/axes: {', '.join(missing_axes)}."
+            )
+        sampling_vertices = [vertex.co.copy() for vertex in sampling_mesh.vertices]
+        sampling_polygons = [tuple(polygon.vertices) for polygon in sampling_mesh.polygons]
+        bvh = BVHTree.FromPolygons(
+            sampling_vertices,
+            sampling_polygons,
+            all_triangles=False,
+        )
+        if bvh is None:
+            raise VoxelizerError("Could not build a surface acceleration structure.")
 
-    bounds_min = Vector(
-        tuple(
+        bounds_min = Vector(tuple(
             min(vertex.co[axis] for vertex in sampling_mesh.vertices)
             for axis in range(3)
-        )
-    )
-    bounds_max = Vector(
-        tuple(
+        ))
+        bounds_max = Vector(tuple(
             max(vertex.co[axis] for vertex in sampling_mesh.vertices)
             for axis in range(3)
-        )
-    )
+        ))
     voxel_size = float(settings.voxel_size)
     proven_axes = set(str(axis) for axis in source_symmetry["proven_axes"])
     lattice_indices, lattice_coordinates, lattice_report = _build_sampling_lattice(
@@ -2437,22 +2855,37 @@ def _sample_surface_voxels_from_meshes_iter(
         f"Prepared {candidate_count:,} candidates for {source.name}",
     )
 
-    sampler = ColourSampler(
-        source_mesh,
-        settings.uv_map,
-        settings.base_color_image,
-        settings.fallback_color,
-        auto_material_images=bool(getattr(settings, "auto_material_images", True)),
-        filter_mode=str(getattr(settings, "texture_filter", "BILINEAR")),
-    )
     adaptive_enabled = (
         str(getattr(settings, "sampling_mode", "UNIFORM")) == "ADAPTIVE"
         and _setting_int(settings, "adaptive_max_level", 2, 0) > 0
     )
+    if occupancy_only and adaptive_enabled:
+        raise VoxelizerError("Occupancy-only fitting is available for Uniform sampling only.")
+    sampler = None if occupancy_only else (
+        session.sampler if session is not None else ColourSampler(
+            source_mesh,
+            settings.uv_map,
+            settings.base_color_image,
+            settings.fallback_color,
+            auto_material_images=bool(getattr(settings, "auto_material_images", True)),
+            filter_mode=str(getattr(settings, "texture_filter", "BILINEAR")),
+            image_cache_budget_bytes=cache_budget_bytes(settings),
+        )
+    )
     analysis_cell_size = voxel_size if adaptive_enabled else 0.0
+    requested_backend = str(getattr(settings, "compute_backend", "AUTO"))
+    gpu_batch_size = _setting_int(settings, "gpu_batch_size", 65_536, 1_024)
+    gpu_memory_limit_mb = _setting_int(settings, "gpu_memory_limit_mb", 512, 64)
+    backend_diagnostics: dict[str, object] = {
+        "requested": requested_backend.upper(),
+        "used": "CPU",
+        "available": False,
+        "reason": "Adaptive analysis uses the CPU path" if adaptive_enabled else "No occupied points",
+    }
     centres: list[Vector] = []
     colours: list[tuple[float, ...]] = []
     analyses: list[_ColourAnalysis] = []
+    surface_locations: list[Vector] = []
     occupied_seed_count = 0
     orbit_added_count = 0
     adaptive_rejected_seed_count = 0
@@ -2478,10 +2911,14 @@ def _sample_surface_voxels_from_meshes_iter(
                     ):
                         adaptive_rejected_seed_count += 1
                     else:
-                        analysis = sampler.analyse_nearest(location, analysis_cell_size)
                         centres.append(centre)
-                        colours.append(analysis.colour)
-                        analyses.append(analysis)
+                        if adaptive_enabled:
+                            assert sampler is not None
+                            analysis = sampler.analyse_nearest(location, analysis_cell_size)
+                            colours.append(analysis.colour)
+                            analyses.append(analysis)
+                        elif not occupancy_only:
+                            surface_locations.append(location.copy())
                         occupied_seed_count += 1
                         if len(centres) > maximum_voxels:
                             raise VoxelizerError(
@@ -2495,6 +2932,15 @@ def _sample_surface_voxels_from_meshes_iter(
                     candidate_count,
                     f"Sampling {source.name}",
                 )
+        if not adaptive_enabled and not occupancy_only and surface_locations:
+            assert sampler is not None
+            analyses, backend_diagnostics = sampler.analyse_nearest_batch(
+                surface_locations,
+                requested_backend=requested_backend,
+                gpu_batch_size=gpu_batch_size,
+                gpu_memory_limit_mb=gpu_memory_limit_mb,
+            )
+            colours = [analysis.colour for analysis in analyses]
     else:
         selected_indices: set[tuple[int, int, int]] = set()
         for candidate_number, (x_offset, y_offset, z_offset) in enumerate(
@@ -2564,15 +3010,20 @@ def _sample_surface_voxels_from_meshes_iter(
                     coordinate_lookup[2][z_index],
                 )
             )
-            nearest = bvh.find_nearest(centre)
-            if nearest is None or nearest[0] is None:
-                raise VoxelizerError(
-                    "Could not independently colour-sample a symmetry orbit centre."
-                )
             centres.append(centre)
-            analysis = sampler.analyse_nearest(nearest[0], analysis_cell_size)
-            colours.append(analysis.colour)
-            analyses.append(analysis)
+            if not occupancy_only:
+                nearest = bvh.find_nearest(centre)
+                if nearest is None or nearest[0] is None:
+                    raise VoxelizerError(
+                        "Could not independently colour-sample a symmetry orbit centre."
+                    )
+                if adaptive_enabled:
+                    assert sampler is not None
+                    analysis = sampler.analyse_nearest(nearest[0], analysis_cell_size)
+                    colours.append(analysis.colour)
+                    analyses.append(analysis)
+                else:
+                    surface_locations.append(nearest[0].copy())
             if colour_number % chunk_size == 0:
                 yield SamplingProgress(
                     "COLOUR",
@@ -2580,9 +3031,28 @@ def _sample_surface_voxels_from_meshes_iter(
                     len(ordered_indices),
                     f"Sampling colours for {source.name}",
                 )
+        if not adaptive_enabled and not occupancy_only and surface_locations:
+            assert sampler is not None
+            analyses, backend_diagnostics = sampler.analyse_nearest_batch(
+                surface_locations,
+                requested_backend=requested_backend,
+                gpu_batch_size=gpu_batch_size,
+                gpu_memory_limit_mb=gpu_memory_limit_mb,
+            )
+            colours = [analysis.colour for analysis in analyses]
         orbit_added_count = max(0, len(centres) - occupied_seed_count)
     if not centres:
         raise VoxelizerError("No surface voxels were produced; decrease Voxel Size.")
+    if occupancy_only:
+        fallback = tuple(float(value) for value in settings.fallback_color)
+        colours = [fallback] * len(centres)
+        analyses = [_ColourAnalysis(fallback, 0.0, 0.0)] * len(centres)
+        backend_diagnostics = {
+            "requested": requested_backend.upper(),
+            "used": "NONE",
+            "available": False,
+            "reason": "Occupancy-only target fit skipped all texture reads",
+        }
     base_count = len(centres)
     cells = [
         _VoxelCell(
@@ -2593,6 +3063,7 @@ def _sample_surface_voxels_from_meshes_iter(
             colour=colour,
             texture_error=analysis.texture_error,
             geometry_angle=analysis.geometry_angle,
+            source_uv=analysis.source_uv,
         )
         for centre, colour, analysis in zip(centres, colours, analyses)
     ]
@@ -2605,6 +3076,7 @@ def _sample_surface_voxels_from_meshes_iter(
         "budget_limited": False,
     }
     if adaptive_enabled:
+        assert sampler is not None
         cells, adaptive_diagnostics = yield from _adaptive_refine_cells_iter(
             source,
             settings,
@@ -2618,6 +3090,7 @@ def _sample_surface_voxels_from_meshes_iter(
     sizes = [cell.size for cell in cells]
     extents = [cell.extent for cell in cells]
     levels = [cell.level for cell in cells]
+    source_uvs = [cell.source_uv for cell in cells]
     diagnostics = {
         "schema": SYMMETRY_SCHEMA_VERSION,
         "source_symmetry": source_symmetry,
@@ -2646,7 +3119,11 @@ def _sample_surface_voxels_from_meshes_iter(
             else 1.0 - (candidate_count / full_grid_count)
         ),
         "chunk_size": chunk_size,
+        "compute_backend": backend_diagnostics,
         "cache_hit": False,
+        "source_session_reused": session is not None,
+        "source_session_timings": dict(session.timings) if session is not None else {},
+        "occupancy_only": bool(occupancy_only),
         "occupied_seed_count": occupied_seed_count,
         "adaptive_rejected_seed_count": adaptive_rejected_seed_count,
         "orbit_added_count": orbit_added_count,
@@ -2676,7 +3153,8 @@ def _sample_surface_voxels_from_meshes_iter(
         sizes=sizes,
         extents=extents,
         levels=levels,
-        used_image=sampler.uses_image,
+        used_image=bool(sampler is not None and sampler.uses_image),
+        source_uvs=source_uvs,
     )
 
 
@@ -2691,6 +3169,8 @@ def sample_surface_voxels_iter(
     *,
     cache_key: Optional[str] = None,
     use_cache: bool = True,
+    session: Optional[SourceSamplingSession] = None,
+    occupancy_only: bool = False,
 ) -> Iterator[SamplingProgress]:
     """Incrementally sample one source and return the result on completion.
 
@@ -2700,8 +3180,15 @@ def sample_surface_voxels_iter(
     """
 
     validate_settings(settings)
-    sampling_key = cache_key or preview_sampling_key(context, source, settings)
-    cache_id = _sampling_cache_key(source, sampling_key)
+    sampling_key = cache_key or (
+        _session_sampling_key(session, settings)
+        if session is not None
+        else preview_sampling_key(context, source, settings)
+    )
+    cache_id = _sampling_cache_key(
+        source,
+        sampling_key + (":OCCUPANCY" if occupancy_only else ":FULL"),
+    )
     if use_cache:
         entry = _cache_get(cache_id)
         if entry is not None:
@@ -2724,6 +3211,10 @@ def sample_surface_voxels_iter(
                 "levels",
                 [0] * len(centres),
             )]
+            source_uvs = [tuple(value) for value in entry.get(
+                "source_uvs",
+                [(0.0, 0.0)] * len(centres),
+            )]
             yield SamplingProgress(
                 "CACHE",
                 1,
@@ -2737,32 +3228,35 @@ def sample_surface_voxels_iter(
                 extents=extents,
                 levels=levels,
                 used_image=bool(entry["used_image"]),
+                source_uvs=source_uvs,
             )
 
-    with evaluated_local_mesh(context, source) as source_mesh:
-        source_diagnostics = mesh_diagnostics(source_mesh)
-        source_symmetry = reflection_symmetry_diagnostics(source_mesh)
-        sampling_object, helper_rebuilt = ensure_sampling_object(
+    if session is not None:
+        result = yield from _sample_surface_voxels_from_meshes_iter(
             context,
             source,
             settings,
-            source_mesh=source_mesh,
-            source_diagnostics=source_diagnostics,
-            source_symmetry=source_symmetry,
+            source_mesh=session.source_mesh,
+            source_symmetry=session.source_symmetry,
+            sampling_object=session.sampling_object,
+            helper_rebuilt=session.helper_rebuilt,
+            sampling_mesh=session.sampling_mesh,
+            session=session,
+            occupancy_only=occupancy_only,
         )
-        if sampling_object is source:
-            result = yield from _sample_surface_voxels_from_meshes_iter(
+    else:
+        with evaluated_local_mesh(context, source) as source_mesh:
+            source_diagnostics = mesh_diagnostics(source_mesh)
+            source_symmetry = reflection_symmetry_diagnostics(source_mesh)
+            sampling_object, helper_rebuilt = ensure_sampling_object(
                 context,
                 source,
                 settings,
                 source_mesh=source_mesh,
+                source_diagnostics=source_diagnostics,
                 source_symmetry=source_symmetry,
-                sampling_object=sampling_object,
-                helper_rebuilt=helper_rebuilt,
-                sampling_mesh=source_mesh,
             )
-        else:
-            with evaluated_local_mesh(context, sampling_object) as sampling_mesh:
+            if sampling_object is source:
                 result = yield from _sample_surface_voxels_from_meshes_iter(
                     context,
                     source,
@@ -2771,8 +3265,22 @@ def sample_surface_voxels_iter(
                     source_symmetry=source_symmetry,
                     sampling_object=sampling_object,
                     helper_rebuilt=helper_rebuilt,
-                    sampling_mesh=sampling_mesh,
+                    sampling_mesh=source_mesh,
+                    occupancy_only=occupancy_only,
                 )
+            else:
+                with evaluated_local_mesh(context, sampling_object) as sampling_mesh:
+                    result = yield from _sample_surface_voxels_from_meshes_iter(
+                        context,
+                        source,
+                        settings,
+                        source_mesh=source_mesh,
+                        source_symmetry=source_symmetry,
+                        sampling_object=sampling_object,
+                        helper_rebuilt=helper_rebuilt,
+                        sampling_mesh=sampling_mesh,
+                        occupancy_only=occupancy_only,
+                    )
 
     if not isinstance(result, VoxelSampleResult):
         centres, colours, _count, used_image = result
@@ -2783,20 +3291,23 @@ def sample_surface_voxels_iter(
             extents=[Vector((float(settings.voxel_size),) * 3)] * len(centres),
             levels=[0] * len(centres),
             used_image=used_image,
+            source_uvs=[(0.0, 0.0)] * len(centres),
         )
     diagnostics = dict(_LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()])
     diagnostics["cache_hit"] = False
-    _cache_put(
-        cache_id,
-        result.centres,
-        result.colours,
-        result.sizes,
-        result.extents,
-        result.levels,
-        result.used_image,
-        diagnostics,
-        settings,
-    )
+    if use_cache:
+        _cache_put(
+            cache_id,
+            result.centres,
+            result.colours,
+            result.sizes,
+            result.extents,
+            result.levels,
+            result.source_uvs or [(0.0, 0.0)] * result.count,
+            result.used_image,
+            diagnostics,
+            settings,
+        )
     diagnostics["cache_entries"] = len(_SAMPLE_CACHE)
     diagnostics["cache_bytes"] = int(_SAMPLE_CACHE_BYTES)
     _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = diagnostics
@@ -2821,6 +3332,8 @@ def sample_surface_voxels(
     cache_key: Optional[str] = None,
     use_cache: bool = True,
     progress_callback=None,
+    session: Optional[SourceSamplingSession] = None,
+    occupancy_only: bool = False,
 ) -> VoxelSampleResult:
     """Synchronous sampling API used by scripts and background tests."""
 
@@ -2831,6 +3344,8 @@ def sample_surface_voxels(
             settings,
             cache_key=cache_key,
             use_cache=use_cache,
+            session=session,
+            occupancy_only=occupancy_only,
         ),
         progress_callback,
     )
@@ -2858,12 +3373,14 @@ def build_voxel_mesh_iter(
             extents=[Vector((float(settings.voxel_size),) * 3)] * len(centres),
             levels=[0] * len(centres),
             used_image=used_image,
+            source_uvs=[(0.0, 0.0)] * len(centres),
         )
     centres = sample_result.centres
     colours = sample_result.colours
     sizes = sample_result.sizes
     extents = sample_result.extents
     levels = sample_result.levels
+    source_uvs = sample_result.source_uvs or [(0.0, 0.0)] * sample_result.count
     count = sample_result.count
     used_image = sample_result.used_image
     base_voxel_size = float(settings.voxel_size)
@@ -2926,12 +3443,18 @@ def build_voxel_mesh_iter(
             type="INT",
             domain="FACE",
         )
+        source_uv_attribute = result.attributes.new(
+            name="source_uv",
+            type="FLOAT2",
+            domain="FACE",
+        )
         for polygon_number, polygon in enumerate(result.polygons, start=1):
             voxel_index = polygon.index // 6
             colour = colours[voxel_index]
             size_attribute.data[polygon.index].value = sizes[voxel_index]
             extent_attribute.data[polygon.index].vector = extents[voxel_index]
             level_attribute.data[polygon.index].value = levels[voxel_index]
+            source_uv_attribute.data[polygon.index].vector = source_uvs[voxel_index]
             for loop_index in polygon.loop_indices:
                 attribute.data[loop_index].color = colour
             if polygon_number % (chunk_size * 6) == 0:
