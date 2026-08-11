@@ -60,6 +60,63 @@ def _configured_source(settings):
     return getattr(settings, "live_source", None)
 
 
+def _clear_surface_check(settings) -> None:
+    """Invalidate cached UI-only diagnostics without touching mesh data."""
+
+    if settings is None or not hasattr(settings, "surface_check_state"):
+        return
+    settings.surface_check_state = "UNCHECKED"
+    settings.surface_check_source = ""
+    settings.surface_check_mesh_pointer = ""
+    settings.surface_check_boundary_edges = 0
+    settings.surface_check_components = 0
+    settings.surface_check_watertight = False
+    settings.surface_check_seconds = 0.0
+
+
+def _invalidate_surface_check_from_updates(settings, depsgraph) -> None:
+    source_name = str(getattr(settings, "surface_check_source", ""))
+    if not source_name:
+        return
+    source = bpy.data.objects.get(source_name)
+    if source is None or source.type != "MESH":
+        _clear_surface_check(settings)
+        return
+    source_data = source.data
+    for update in depsgraph.updates:
+        updated = getattr(update, "id", None)
+        if not _same_blender_id(updated, source) and not _same_blender_id(updated, source_data):
+            continue
+        if getattr(update, "is_updated_geometry", False) or _same_blender_id(updated, source_data):
+            _clear_surface_check(settings)
+            return
+
+
+def _record_runtime_id_updates(depsgraph) -> None:
+    """Feed cheap preview-key revisions from Blender's own update stream."""
+
+    try:
+        from . import core
+    except ImportError:
+        return
+    for update in depsgraph.updates:
+        updated = getattr(update, "id", None)
+        try:
+            original = getattr(updated, "original", None) or updated
+            is_colour_id = isinstance(
+                original,
+                (bpy.types.Material, bpy.types.Image, bpy.types.NodeTree),
+            )
+            is_mesh_id = isinstance(original, bpy.types.Mesh)
+            geometry_changed = bool(getattr(update, "is_updated_geometry", False))
+            if geometry_changed or is_colour_id or is_mesh_id:
+                core.mark_runtime_id_updated(updated)
+            if geometry_changed and isinstance(original, bpy.types.Object):
+                core.mark_runtime_id_updated(getattr(original, "data", None))
+        except (AttributeError, ReferenceError, TypeError):
+            continue
+
+
 def _preview_exists(source) -> bool:
     if source is None:
         return False
@@ -204,7 +261,10 @@ def settings_changed(settings, context, kind: str) -> None:
 
 @persistent
 def depsgraph_update_post(scene, depsgraph) -> None:
+    _record_runtime_id_updates(depsgraph)
     settings = _settings(scene)
+    if settings is not None:
+        _invalidate_surface_check_from_updates(settings, depsgraph)
     if (
         _load_suppressed
         or _rebuilding
@@ -241,10 +301,13 @@ def load_post(_dummy) -> None:
     _load_suppressed = True
     settings = _settings()
     cancel_pending(settings, stop_running=True)
+    _clear_surface_check(settings)
     try:
         from . import preview
+        from . import core
 
         preview.clear_runtime_cache()
+        core.clear_runtime_id_revisions()
     except (AttributeError, ImportError):
         pass
     _load_suppressed = False

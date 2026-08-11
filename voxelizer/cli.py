@@ -212,8 +212,11 @@ def fit_target_voxels(
     if sampling_mode == "ADAPTIVE":
         size *= 2.0 ** max(0, detail_level) * 0.72
     attempts = []
-    best = None
+    best_size = None
+    best_count = None
     best_error = float("inf")
+    dense_size = None
+    sparse_size = None
     lower_bound = int(math.floor(target_voxels * (1.0 - tolerance)))
     configure_settings(
         settings,
@@ -275,7 +278,8 @@ def fit_target_voxels(
             })
             error = abs(count - desired)
             if count <= target_voxels and error < best_error:
-                best = (candidate if not occupancy_fit else None, size)
+                best_size = float(size)
+                best_count = count
                 best_error = error
             if lower_bound <= count <= target_voxels:
                 if occupancy_fit:
@@ -298,31 +302,37 @@ def fit_target_voxels(
                         )
                     return sample, size, attempts
                 return candidate, size, attempts
-            size *= math.sqrt(max(1, count) / max(1.0, desired))
+
             if count > target_voxels:
-                size *= 1.018
+                dense_size = max(float(size), dense_size or float("-inf"))
+            elif count < lower_bound:
+                sparse_size = min(float(size), sparse_size or float("inf"))
+
+            if dense_size is not None and sparse_size is not None:
+                if dense_size >= sparse_size:
+                    raise CLIError(
+                        "Target fitting produced a non-monotonic size bracket: "
+                        f"dense={dense_size:.9g}, sparse={sparse_size:.9g}; "
+                        f"attempts={attempts}"
+                    )
+                next_size = math.sqrt(dense_size * sparse_size)
             else:
-                size *= 0.994
-    if best is None:
-        raise CLIError(f"Could not fit below {target_voxels:,} voxels: {attempts}")
-    if best[0] is None:
-        best_size = float(best[1])
-        configure_settings(
-            settings,
-            voxel_size=best_size,
-            sampling_mode=sampling_mode,
-            detail_level=detail_level,
-            max_voxels=editable.MODEL_POINT_LIMIT,
-            compute_backend=compute_backend,
-            gpu_batch_size=gpu_batch_size,
-            gpu_memory_limit_mb=gpu_memory_limit_mb,
-        )
-        settings.repair_voxel_size = fixed_repair_size
-        # The context manager has closed at this point, so prepare one correct
-        # final sample only for the rare max-iteration fallback.
-        sample = core.sample_surface_voxels(context, source, settings, use_cache=True)
-        return sample, best_size, attempts
-    return best[0], best[1], attempts
+                next_size = size * math.sqrt(max(1, count) / max(1.0, desired))
+                next_size *= 1.018 if count > target_voxels else 0.994
+            if abs(next_size - size) <= max(1.0e-12, abs(size) * 1.0e-9):
+                break
+            size = next_size
+
+    best_text = (
+        "none"
+        if best_size is None or best_count is None
+        else f"{best_count:,} voxels at size {best_size:.9g}"
+    )
+    raise CLIError(
+        f"Could not fit {lower_bound:,}-{target_voxels:,} voxels within "
+        f"{max_iterations} iteration(s); best under target was {best_text}. "
+        f"No out-of-tolerance output was created. Attempts: {attempts}"
+    )
 
 
 def create_editable_output(

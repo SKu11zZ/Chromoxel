@@ -23,7 +23,7 @@ from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview,
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 8, 0),
+    "version": (0, 8, 1),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -430,6 +430,51 @@ class VOXELIZER_PG_settings(PropertyGroup):
         default=True,
         options={"HIDDEN", "SKIP_SAVE"},
     )
+    surface_check_state: EnumProperty(
+        name="Surface Check State",
+        items=(
+            ("UNCHECKED", "Unchecked", "No explicit surface inspection has run"),
+            ("WATERTIGHT", "Watertight", "The inspected source is one closed manifold"),
+            ("REPAIR", "Repair", "The inspected source requires a private repair copy"),
+            ("BLOCKED", "Blocked", "The inspected source is non-manifold and repair is disabled"),
+            ("ERROR", "Error", "The explicit surface inspection failed"),
+        ),
+        default="UNCHECKED",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_source: StringProperty(
+        name="Checked Surface Source",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_mesh_pointer: StringProperty(
+        name="Checked Surface Mesh Pointer",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_boundary_edges: IntProperty(
+        name="Checked Boundary Edges",
+        default=0,
+        min=0,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_components: IntProperty(
+        name="Checked Components",
+        default=0,
+        min=0,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_watertight: BoolProperty(
+        name="Checked Surface Is Watertight",
+        default=False,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    surface_check_seconds: FloatProperty(
+        name="Surface Check Seconds",
+        default=0.0,
+        min=0.0,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
     task_running: BoolProperty(
         name="Task Running",
         default=False,
@@ -537,6 +582,68 @@ class VOXELIZER_OT_estimate(Operator):
             settings.estimate_detail = ""
             settings.estimate_ok = False
             self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+
+class VOXELIZER_OT_check_surface(Operator):
+    """Run the expensive topology inspection only after an explicit click."""
+
+    bl_idname = "voxelizer.check_surface"
+    bl_label = "Check Surface"
+    bl_description = "Explicitly inspect the active mesh for boundaries and components"
+
+    @classmethod
+    def poll(cls, context):
+        settings = getattr(context.scene, "voxelizer_settings", None)
+        source = context.active_object
+        return (
+            settings is not None
+            and not settings.task_running
+            and source is not None
+            and source.type == "MESH"
+            and not core.is_tool_output(source)
+        )
+
+    def execute(self, context):
+        settings = context.scene.voxelizer_settings
+        source = context.active_object
+        started = time.perf_counter()
+        try:
+            diagnostics = core.mesh_diagnostics(source.data)
+            ready = core.diagnostics_ready(diagnostics)
+            settings.surface_check_source = source.name_full
+            settings.surface_check_mesh_pointer = str(source.data.as_pointer())
+            settings.surface_check_boundary_edges = int(diagnostics["boundary_edges"])
+            settings.surface_check_components = int(diagnostics["components"])
+            settings.surface_check_watertight = bool(ready)
+            settings.surface_check_seconds = time.perf_counter() - started
+            settings.surface_check_state = (
+                "WATERTIGHT"
+                if ready
+                else "REPAIR"
+                if settings.auto_watertight_copy
+                else "BLOCKED"
+            )
+            self.report(
+                {"INFO"},
+                (
+                    f"Checked {source.name}: {diagnostics['boundary_edges']} boundary edge(s), "
+                    f"{diagnostics['components']} component(s) in "
+                    f"{settings.surface_check_seconds:.3f}s."
+                ),
+            )
+            return {"FINISHED"}
+        except Exception as exc:
+            settings.surface_check_source = source.name_full if source is not None else ""
+            settings.surface_check_mesh_pointer = (
+                str(source.data.as_pointer())
+                if source is not None and source.type == "MESH"
+                else ""
+            )
+            settings.surface_check_seconds = time.perf_counter() - started
+            settings.surface_check_watertight = False
+            settings.surface_check_state = "ERROR"
+            self.report({"ERROR"}, f"Surface check failed: {exc}")
             return {"CANCELLED"}
 
 
@@ -939,19 +1046,30 @@ class VOXELIZER_PT_panel(Panel):
         if settings.auto_watertight_copy:
             repair_box.prop(settings, "repair_voxel_size")
         if source is not None and source.type == "MESH" and not core.is_tool_output(source):
-            diagnostics = core.mesh_diagnostics(source.data)
-            if core.is_closed_manifold(source.data):
+            checked = (
+                settings.surface_check_state != "UNCHECKED"
+                and settings.surface_check_source == source.name_full
+                and settings.surface_check_mesh_pointer == str(source.data.as_pointer())
+            )
+            repair_box.operator(VOXELIZER_OT_check_surface.bl_idname, icon="VIEWZOOM")
+            if not checked:
+                repair_box.label(text="Surface not checked", icon="INFO")
+            elif settings.surface_check_state == "ERROR":
+                repair_box.label(text="Surface check failed", icon="ERROR")
+            elif settings.surface_check_watertight:
                 repair_box.label(text="Active source is watertight", icon="CHECKMARK")
             elif settings.auto_watertight_copy:
                 repair_box.label(text="Private repair copy will be used", icon="MOD_REMESH")
             else:
                 repair_box.label(text="Non-manifold source is blocked", icon="ERROR")
-            repair_box.label(
-                text=(
-                    f"Boundary {diagnostics['boundary_edges']} | "
-                    f"Components {diagnostics['components']}"
+            if checked:
+                repair_box.label(
+                    text=(
+                        f"Boundary {settings.surface_check_boundary_edges} | "
+                        f"Components {settings.surface_check_components} | "
+                        f"{settings.surface_check_seconds:.3f}s"
+                    )
                 )
-            )
         else:
             repair_box.label(text="Select an original Mesh source", icon="INFO")
 
@@ -1201,6 +1319,7 @@ CLASSES = (
     VOXELIZER_PG_settings,
     VOXELIZER_OT_quality_preset,
     VOXELIZER_OT_estimate,
+    VOXELIZER_OT_check_surface,
     VOXELIZER_OT_preview,
     VOXELIZER_OT_bake,
     VOXELIZER_OT_cancel_job,

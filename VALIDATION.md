@@ -4,6 +4,31 @@
 
 Date / 日期：2026-08-11
 
+### Chromoxel 0.8.1 dense-source and passive-panel validation
+
+- On both 1.47-1.49-million-face Tripo sources, 100 panel draws completed
+  without topology traversal. The measured draw cost was 0.037-0.042 ms.
+- The first bounded Preview key on Tripo 220646 took 26.9 ms and repeated keys
+  took 0.125 ms, versus 12.1 s for the previous full geometry/UV hash.
+- SourceSession preparation measured 6.437 s (Tripo 214730), 6.375 s (Tripo
+  220646), and 0.210 s (Mixamo CH14). All symmetry, adaptive, editable, Bake,
+  VOX, 100K-carrier, cache, and CPU-fallback regressions passed.
+- The Tripo 220646 2K CLI acceptance produced 1,934 voxels (3.3% below target)
+  in 17.7 s end-to-end. All eight fit attempts and final colour sampling reused
+  one source session; no out-of-tolerance fallback was saved.
+
+### Chromoxel 0.8.1 高密度模型与轻量面板验证
+
+- 两个 147-149 万面 Tripo 模型各执行 100 次面板 draw，均未遍历拓扑；单次耗时
+  0.037-0.042 ms。
+- Tripo 220646 首次有界 Preview key 为 26.9 ms，后续为 0.125 ms；旧版完整
+  几何/UV 哈希约为 12.1 秒。
+- SourceSession 分别为 Tripo 214730 6.437 秒、Tripo 220646 6.375 秒、Mixamo
+  CH14 0.210 秒；对称、自适应、编辑、Bake、VOX、10 万点载体、缓存和 CPU 回退
+  回归全部通过。
+- Tripo 220646 的 2K CLI 验收端到端耗时 17.7 秒，输出 1,934 个体素（误差 3.3%）；
+  8 次拟合与最终颜色采样共用一个 SourceSession，未保存任何超差回退结果。
+
 ### Chromoxel 0.8 GPU and performance validation
 
 - Blender 5.1.2 created and dispatched the Chromoxel compute shader on the

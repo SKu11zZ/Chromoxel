@@ -61,6 +61,11 @@ _SAMPLE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SAMPLE_CACHE_BYTES = 0
 _IMAGE_BUFFER_CACHE: OrderedDict[tuple[object, ...], "_ImageBuffer"] = OrderedDict()
 _IMAGE_BUFFER_CACHE_BYTES = 0
+_RUNTIME_ID_REVISIONS: dict[int, int] = {}
+_RUNTIME_REVISION_SERIAL = 0
+_RUNTIME_KEY_EPOCH = hashlib.sha256(
+    f"{time.time_ns()}:{id(_RUNTIME_ID_REVISIONS)}".encode("ascii")
+).digest()
 
 
 class VoxelizerError(RuntimeError):
@@ -117,6 +122,14 @@ class _ColourAnalysis:
     texture_error: float
     geometry_angle: float
     source_uv: tuple[float, float] = (0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class _TriangleView:
+    """Small triangle proxy used without materializing all loop triangles."""
+
+    vertices: tuple[int, int, int]
+    loops: tuple[int, int, int]
 
 
 @dataclass
@@ -181,6 +194,42 @@ def sampling_cache_stats() -> dict[str, int]:
         "image_entries": len(_IMAGE_BUFFER_CACHE),
         "image_bytes": int(_IMAGE_BUFFER_CACHE_BYTES),
     }
+
+
+def _runtime_id_pointer(datablock) -> int:
+    if datablock is None:
+        return 0
+    try:
+        original = getattr(datablock, "original", None) or datablock
+        return int(original.as_pointer())
+    except (AttributeError, ReferenceError, TypeError):
+        return 0
+
+
+def mark_runtime_id_updated(datablock) -> None:
+    """Advance the cheap preview fingerprint for one changed Blender ID."""
+
+    global _RUNTIME_REVISION_SERIAL
+    pointer = _runtime_id_pointer(datablock)
+    if pointer == 0:
+        return
+    _RUNTIME_REVISION_SERIAL += 1
+    _RUNTIME_ID_REVISIONS[pointer] = _RUNTIME_REVISION_SERIAL
+
+
+def clear_runtime_id_revisions() -> None:
+    """Reset revisions and force saved Preview keys to miss after file load."""
+
+    global _RUNTIME_KEY_EPOCH, _RUNTIME_REVISION_SERIAL
+    _RUNTIME_ID_REVISIONS.clear()
+    _RUNTIME_REVISION_SERIAL = 0
+    _RUNTIME_KEY_EPOCH = hashlib.sha256(
+        f"{time.time_ns()}:{id(object())}".encode("ascii")
+    ).digest()
+
+
+def _runtime_id_revision(datablock) -> int:
+    return _RUNTIME_ID_REVISIONS.get(_runtime_id_pointer(datablock), 0)
 
 
 def _cache_get(key: str):
@@ -278,18 +327,29 @@ def _symmetry_bounds(
     if not mesh.vertices:
         origin = Vector((0.0, 0.0, 0.0))
         return origin.copy(), origin.copy(), 0.0, SYMMETRY_ABSOLUTE_FLOOR
-    bounds_min = Vector(
-        tuple(
-            min(float(vertex.co[axis]) for vertex in mesh.vertices)
-            for axis in range(3)
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+    if np is not None:
+        values = array("f", [0.0]) * (len(mesh.vertices) * 3)
+        mesh.vertices.foreach_get("co", values)
+        coordinates = np.frombuffer(values, dtype=np.float32).reshape((-1, 3))
+        bounds_min = Vector(tuple(float(value) for value in coordinates.min(axis=0)))
+        bounds_max = Vector(tuple(float(value) for value in coordinates.max(axis=0)))
+    else:
+        bounds_min = Vector(
+            tuple(
+                min(float(vertex.co[axis]) for vertex in mesh.vertices)
+                for axis in range(3)
+            )
         )
-    )
-    bounds_max = Vector(
-        tuple(
-            max(float(vertex.co[axis]) for vertex in mesh.vertices)
-            for axis in range(3)
+        bounds_max = Vector(
+            tuple(
+                max(float(vertex.co[axis]) for vertex in mesh.vertices)
+                for axis in range(3)
+            )
         )
-    )
     diagonal = float((bounds_max - bounds_min).length)
     tolerance = max(
         diagonal * SYMMETRY_RELATIVE_TOLERANCE,
@@ -305,42 +365,150 @@ def _spatial_key(coordinate: Iterable[float], tolerance: float) -> tuple[int, in
     )
 
 
+def _axis_distribution_rejections(
+    mesh: bpy.types.Mesh,
+    bounds_min: Vector,
+    bounds_max: Vector,
+    tolerance: float,
+) -> dict[str, float]:
+    """Reject impossible axes from a necessary 1D reflection condition.
+
+    A valid 3D reflection bijection implies that the sorted coordinates on
+    the reflected axis pair within the exact proof tolerance.  Failure is
+    therefore conclusive; passing this check is not treated as proof.
+    """
+
+    if len(mesh.vertices) < 2:
+        return {}
+    try:
+        import numpy as np
+    except ImportError:
+        return {}
+    values = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", values)
+    coordinates = np.frombuffer(values, dtype=np.float32).reshape((-1, 3))
+    limit = float(tolerance) * 1.01 + 1.0e-12
+    rejected: dict[str, float] = {}
+    for axis, axis_name in enumerate(_AXIS_NAMES):
+        ordered = np.sort(coordinates[:, axis].astype(np.float64, copy=True))
+        pair_errors = np.abs(
+            ordered
+            + ordered[::-1]
+            - (float(bounds_min[axis]) + float(bounds_max[axis]))
+        )
+        maximum_error = float(np.max(pair_errors)) if len(pair_errors) else 0.0
+        if maximum_error > limit:
+            rejected[axis_name] = maximum_error
+    return rejected
+
+
 def _reflection_vertex_map(
     mesh: bpy.types.Mesh,
     axis: int,
     plane: float,
     tolerance: float,
+    *,
+    coordinates: Optional[list[Vector]] = None,
+    buckets: Optional[dict[tuple[int, int, int], list[int]]] = None,
+    topology_cache: Optional[dict[str, object]] = None,
 ) -> tuple[Optional[tuple[int, ...]], str, dict[str, object]]:
-    buckets: dict[tuple[int, int, int], list[int]] = {}
-    coordinates = [vertex.co.copy() for vertex in mesh.vertices]
-    for index, coordinate in enumerate(coordinates):
-        buckets.setdefault(_spatial_key(coordinate, tolerance), []).append(index)
+    coordinates = coordinates or [vertex.co.copy() for vertex in mesh.vertices]
+    if buckets is None:
+        buckets = {}
+        for index, coordinate in enumerate(coordinates):
+            buckets.setdefault(_spatial_key(coordinate, tolerance), []).append(index)
+    topology_cache = topology_cache if topology_cache is not None else {}
 
-    neighbours: list[set[int]] = [set() for _vertex in mesh.vertices]
-    edge_face_counts: Counter[tuple[int, int]] = Counter()
-    incident_face_sizes: list[list[int]] = [[] for _vertex in mesh.vertices]
-    for edge in mesh.edges:
-        first, second = (int(value) for value in edge.vertices)
-        neighbours[first].add(second)
-        neighbours[second].add(first)
-    for polygon in mesh.polygons:
-        polygon_indices = tuple(int(index) for index in polygon.vertices)
-        for index in polygon_indices:
-            incident_face_sizes[index].append(len(polygon_indices))
-        for offset, first in enumerate(polygon_indices):
-            second = polygon_indices[(offset + 1) % len(polygon_indices)]
-            edge_face_counts[tuple(sorted((first, second)))] += 1
+    statistics: dict[str, object] = {
+        "raw_ambiguous_vertices": 0,
+        "topology_ambiguous_vertices": 0,
+        "max_raw_candidates": 0,
+        "max_topology_candidates": 0,
+        "bipartite_pairs": 0,
+        "coordinate_preflight_vertices": 0,
+    }
+
+    def raw_candidates_for(index: int) -> list[tuple[float, int]]:
+        reflected = coordinates[index].copy()
+        reflected[axis] = 2.0 * plane - reflected[axis]
+        bucket_key = _spatial_key(reflected, tolerance)
+        result = []
+        for offset in product((-1, 0, 1), repeat=3):
+            neighbour_key = tuple(
+                bucket_key[component] + offset[component]
+                for component in range(3)
+            )
+            for candidate in buckets.get(neighbour_key, ()):
+                distance = float((coordinates[candidate] - reflected).length)
+                if distance <= tolerance:
+                    result.append((distance, candidate))
+        result.sort()
+        return result
+
+    # A missing reflected coordinate is a conclusive symmetry rejection.  Do
+    # this bounded, topology-free probe before allocating vertex adjacency and
+    # scanning every polygon.  Exact proof still runs for every axis that
+    # passes, so this cannot create a false symmetry positive or negative.
+    vertex_count = len(coordinates)
+    preflight_indices = list(range(min(256, vertex_count)))
+    if vertex_count > 256:
+        preflight_indices.extend(
+            min(vertex_count - 1, round(offset * (vertex_count - 1) / 255))
+            for offset in range(256)
+        )
+    for index in dict.fromkeys(preflight_indices):
+        statistics["coordinate_preflight_vertices"] = (
+            int(statistics["coordinate_preflight_vertices"]) + 1
+        )
+        if not raw_candidates_for(index):
+            return (
+                None,
+                f"vertex {index} has no reflected correspondence",
+                statistics,
+            )
+
+    neighbours = topology_cache.get("neighbours")
+    incident_face_sizes = topology_cache.get("incident_face_sizes")
+    edge_face_counts = topology_cache.get("edge_face_counts")
+    local_signatures = topology_cache.get("local_signatures")
+    if (
+        neighbours is None
+        or incident_face_sizes is None
+        or edge_face_counts is None
+        or local_signatures is None
+    ):
+        neighbours = [set() for _vertex in mesh.vertices]
+        edge_face_counts = Counter()
+        incident_face_sizes = [[] for _vertex in mesh.vertices]
+        for edge in mesh.edges:
+            first, second = (int(value) for value in edge.vertices)
+            neighbours[first].add(second)
+            neighbours[second].add(first)
+        for polygon in mesh.polygons:
+            polygon_indices = tuple(int(index) for index in polygon.vertices)
+            for index in polygon_indices:
+                incident_face_sizes[index].append(len(polygon_indices))
+            for offset, first in enumerate(polygon_indices):
+                second = polygon_indices[(offset + 1) % len(polygon_indices)]
+                edge_face_counts[tuple(sorted((first, second)))] += 1
+        local_signatures = []
+        for index in range(vertex_count):
+            edge_incidence = sorted(
+                edge_face_counts[tuple(sorted((index, neighbour)))]
+                for neighbour in neighbours[index]
+            )
+            local_signatures.append((
+                len(neighbours[index]),
+                tuple(sorted(incident_face_sizes[index])),
+                tuple(edge_incidence),
+            ))
+        topology_cache["neighbours"] = neighbours
+        topology_cache["incident_face_sizes"] = incident_face_sizes
+        topology_cache["edge_face_counts"] = edge_face_counts
+        topology_cache["local_signatures"] = local_signatures
 
     def local_signature(index: int) -> tuple[object, ...]:
-        edge_incidence = sorted(
-            edge_face_counts[tuple(sorted((index, neighbour)))]
-            for neighbour in neighbours[index]
-        )
-        return (
-            len(neighbours[index]),
-            tuple(sorted(incident_face_sizes[index])),
-            tuple(edge_incidence),
-        )
+        return local_signatures[index]
 
     def reflected_neighbour_coordinates(index: int) -> list[Vector]:
         result = []
@@ -403,34 +571,14 @@ def _reflection_vertex_map(
         )
 
     candidate_lists: list[tuple[int, ...]] = []
-    statistics: dict[str, object] = {
-        "raw_ambiguous_vertices": 0,
-        "topology_ambiguous_vertices": 0,
-        "max_raw_candidates": 0,
-        "max_topology_candidates": 0,
-        "bipartite_pairs": 0,
-    }
-    for index, coordinate in enumerate(coordinates):
-        reflected = coordinate.copy()
-        reflected[axis] = 2.0 * plane - reflected[axis]
-        bucket_key = _spatial_key(reflected, tolerance)
-        raw_candidates = []
-        for offset in product((-1, 0, 1), repeat=3):
-            neighbour_key = tuple(
-                bucket_key[component] + offset[component]
-                for component in range(3)
-            )
-            for candidate in buckets.get(neighbour_key, ()):
-                distance = float((coordinates[candidate] - reflected).length)
-                if distance <= tolerance:
-                    raw_candidates.append((distance, candidate))
+    for index, _coordinate in enumerate(coordinates):
+        raw_candidates = raw_candidates_for(index)
         if not raw_candidates:
             return (
                 None,
                 f"vertex {index} has no reflected correspondence",
                 statistics,
             )
-        raw_candidates.sort()
         source_signature = local_signature(index)
         topology_candidates = [
             candidate
@@ -591,6 +739,17 @@ def reflection_symmetry_diagnostics(mesh: bpy.types.Mesh) -> dict[str, object]:
     """Conservatively prove local-space reflection symmetry for X, Y, and Z."""
 
     bounds_min, bounds_max, diagonal, tolerance = _symmetry_bounds(mesh)
+    distribution_rejections = _axis_distribution_rejections(
+        mesh,
+        bounds_min,
+        bounds_max,
+        tolerance,
+    )
+    coordinates: Optional[list[Vector]] = None
+    coordinate_buckets: Optional[dict[tuple[int, int, int], list[int]]] = None
+    # Topology is axis-independent. Build it lazily only if a coordinate
+    # preflight passes, then reuse it for the remaining exact axis proofs.
+    topology_cache: dict[str, object] = {}
     diagnostics: dict[str, object] = {
         "schema": SYMMETRY_SCHEMA_VERSION,
         "coordinate_space": "OBJECT_LOCAL",
@@ -599,6 +758,7 @@ def reflection_symmetry_diagnostics(mesh: bpy.types.Mesh) -> dict[str, object]:
         "vertex_count": len(mesh.vertices),
         "edge_count": len(mesh.edges),
         "polygon_count": len(mesh.polygons),
+        "axis_distribution_rejections": distribution_rejections,
         "axes": {},
         "proven_axes": [],
     }
@@ -617,12 +777,34 @@ def reflection_symmetry_diagnostics(mesh: bpy.types.Mesh) -> dict[str, object]:
             "self_vertices": 0,
             "reason": "",
         }
-        mapping, reason, match_statistics = _reflection_vertex_map(
-            mesh,
-            axis,
-            plane,
-            tolerance,
-        )
+        if axis_name in distribution_rejections:
+            mapping = None
+            reason = (
+                "reflected axis-coordinate distribution differs "
+                f"(max error {distribution_rejections[axis_name]:.9g})"
+            )
+            match_statistics = {
+                "axis_distribution_rejected": True,
+                "maximum_axis_error": distribution_rejections[axis_name],
+            }
+        else:
+            if coordinates is None or coordinate_buckets is None:
+                coordinates = [vertex.co.copy() for vertex in mesh.vertices]
+                coordinate_buckets = {}
+                for index, coordinate in enumerate(coordinates):
+                    coordinate_buckets.setdefault(
+                        _spatial_key(coordinate, tolerance),
+                        [],
+                    ).append(index)
+            mapping, reason, match_statistics = _reflection_vertex_map(
+                mesh,
+                axis,
+                plane,
+                tolerance,
+                coordinates=coordinates,
+                buckets=coordinate_buckets,
+                topology_cache=topology_cache,
+            )
         axis_result["matching"] = match_statistics
         if mapping is None:
             axis_result["reason"] = reason
@@ -787,6 +969,71 @@ def mesh_diagnostics(mesh: bpy.types.Mesh) -> dict[str, int | bool]:
         bm.free()
 
 
+def mesh_readiness_diagnostics(mesh: bpy.types.Mesh) -> dict[str, int | bool]:
+    """Return as soon as one condition proves that repair is required.
+
+    The explicit UI surface check continues to use ``mesh_diagnostics`` for
+    complete counts. Sampling only needs the Boolean readiness decision, so a
+    million-face non-manifold source should not pay to count every defect and
+    connected component before building its private repair proxy.
+    """
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        result: dict[str, int | bool] = {
+            "vertices": len(bm.verts),
+            "edges": len(bm.edges),
+            "faces": len(bm.faces),
+            "boundary_edges": 0,
+            "overfull_edges": 0,
+            "wire_edges": 0,
+            "nonmanifold_edges": 0,
+            "degenerate_faces": 0,
+            "components": 0,
+            "empty": len(bm.verts) < 4 or len(bm.faces) < 4,
+            "complete": True,
+        }
+        if result["empty"]:
+            return result
+        for edge in bm.edges:
+            linked_faces = len(edge.link_faces)
+            if linked_faces == 2 and edge.is_manifold:
+                continue
+            result["boundary_edges"] = int(linked_faces == 1)
+            result["overfull_edges"] = int(linked_faces > 2)
+            result["wire_edges"] = int(linked_faces == 0)
+            result["nonmanifold_edges"] = 1
+            result["complete"] = False
+            return result
+        for face in bm.faces:
+            if face.calc_area() <= 1.0e-12:
+                result["degenerate_faces"] = 1
+                result["complete"] = False
+                return result
+
+        unseen = set(bm.verts)
+        components = 0
+        while unseen:
+            components += 1
+            if components > 1:
+                result["components"] = components
+                result["complete"] = False
+                return result
+            stack = [unseen.pop()]
+            while stack:
+                vertex = stack.pop()
+                for edge in vertex.link_edges:
+                    neighbour = edge.other_vert(vertex)
+                    if neighbour in unseen:
+                        unseen.remove(neighbour)
+                        stack.append(neighbour)
+        result["components"] = components
+        return result
+    finally:
+        bm.free()
+
+
 def _diagnostics_ready(diagnostics: dict[str, int | bool]) -> bool:
     return (
         not diagnostics["empty"]
@@ -799,22 +1046,52 @@ def _diagnostics_ready(diagnostics: dict[str, int | bool]) -> bool:
     )
 
 
+def diagnostics_ready(diagnostics: dict[str, int | bool]) -> bool:
+    """Public, allocation-free readiness check for an existing diagnostic report."""
+
+    return _diagnostics_ready(diagnostics)
+
+
 def is_closed_manifold(mesh: bpy.types.Mesh) -> bool:
     return _diagnostics_ready(mesh_diagnostics(mesh))
 
 
 def source_signature(mesh: bpy.types.Mesh, repair_voxel_size: float) -> str:
+    """Hash mesh geometry/topology with Blender's bulk RNA transfer path."""
+
     digest = hashlib.sha256()
-    digest.update(struct.pack("<dIII", float(repair_voxel_size), len(mesh.vertices), len(mesh.edges), len(mesh.polygons)))
-    for vertex in mesh.vertices:
-        digest.update(struct.pack("<3d", float(vertex.co.x), float(vertex.co.y), float(vertex.co.z)))
-    for edge in mesh.edges:
-        digest.update(struct.pack("<2I", int(edge.vertices[0]), int(edge.vertices[1])))
-    for polygon in mesh.polygons:
-        indices = tuple(int(index) for index in polygon.vertices)
-        digest.update(struct.pack("<I", len(indices)))
-        if indices:
-            digest.update(struct.pack(f"<{len(indices)}I", *indices))
+    digest.update(b"CHROMOXEL_SOURCE_SIGNATURE_V2")
+    digest.update(struct.pack(
+        "<dIIII",
+        float(repair_voxel_size),
+        len(mesh.vertices),
+        len(mesh.edges),
+        len(mesh.polygons),
+        len(mesh.loops),
+    ))
+
+    coordinates = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    if coordinates:
+        mesh.vertices.foreach_get("co", coordinates)
+        digest.update(coordinates.tobytes())
+
+    edge_vertices = array("i", [0]) * (len(mesh.edges) * 2)
+    if edge_vertices:
+        mesh.edges.foreach_get("vertices", edge_vertices)
+        digest.update(edge_vertices.tobytes())
+
+    loop_vertices = array("i", [0]) * len(mesh.loops)
+    if loop_vertices:
+        mesh.loops.foreach_get("vertex_index", loop_vertices)
+        digest.update(loop_vertices.tobytes())
+
+    polygon_starts = array("i", [0]) * len(mesh.polygons)
+    polygon_totals = array("i", [0]) * len(mesh.polygons)
+    if polygon_starts:
+        mesh.polygons.foreach_get("loop_start", polygon_starts)
+        mesh.polygons.foreach_get("loop_total", polygon_totals)
+        digest.update(polygon_starts.tobytes())
+        digest.update(polygon_totals.tobytes())
     return digest.hexdigest()
 
 
@@ -943,17 +1220,91 @@ def _colour_inputs_fingerprint(mesh: bpy.types.Mesh, settings) -> bytes:
     return digest.digest()
 
 
+def _runtime_colour_inputs_fingerprint(
+    source: bpy.types.Object,
+    settings,
+) -> bytes:
+    """Fingerprint colour IDs without walking every UV loop or image pixel."""
+
+    mesh = source.data
+    digest = hashlib.sha256()
+    uv_name = str(getattr(settings, "uv_map", ""))
+    digest.update(uv_name.encode("utf-8"))
+    for uv_layer in mesh.uv_layers:
+        digest.update(str(uv_layer.name).encode("utf-8"))
+        digest.update(struct.pack("<Q", len(uv_layer.data)))
+    fallback = tuple(float(value) for value in getattr(
+        settings,
+        "fallback_color",
+        (0.18, 0.48, 0.8, 1.0),
+    ))
+    digest.update(struct.pack("<4f", *fallback))
+    manual_image = getattr(settings, "base_color_image", None)
+    digest.update(struct.pack(
+        "<2Q",
+        _runtime_id_pointer(manual_image),
+        _runtime_id_revision(manual_image),
+    ))
+    digest.update(_image_fingerprint(manual_image))
+    auto_material_images = bool(getattr(settings, "auto_material_images", True))
+    digest.update(b"\x01" if auto_material_images else b"\x00")
+    for material in mesh.materials:
+        if material is None:
+            digest.update(b"NO_MATERIAL")
+            continue
+        digest.update(struct.pack(
+            "<2Q",
+            _runtime_id_pointer(material),
+            _runtime_id_revision(material),
+        ))
+        digest.update(str(material.name_full).encode("utf-8"))
+        digest.update(struct.pack(
+            "<4f",
+            *(float(value) for value in material.diffuse_color),
+        ))
+        node_tree = getattr(material, "node_tree", None)
+        digest.update(struct.pack(
+            "<2Q",
+            _runtime_id_pointer(node_tree),
+            _runtime_id_revision(node_tree),
+        ))
+        if manual_image is None and auto_material_images:
+            image_node = _material_image_node(material)
+            image = getattr(image_node, "image", None) if image_node is not None else None
+            digest.update(struct.pack(
+                "<2Q",
+                _runtime_id_pointer(image),
+                _runtime_id_revision(image),
+            ))
+            digest.update(_image_fingerprint(image))
+            if image_node is not None:
+                digest.update(str(getattr(image_node, "extension", "REPEAT")).encode("ascii"))
+                digest.update(_image_node_uv_name(image_node).encode("utf-8"))
+    return digest.digest()
+
+
 def preview_sampling_key(
     context: bpy.types.Context,
     source: bpy.types.Object,
     settings,
 ) -> str:
-    """Key occupancy and colour inputs; display gap is intentionally absent."""
+    """Build an invalidation-aware key without traversing a dense source mesh."""
 
     digest = hashlib.sha256()
-    with evaluated_local_mesh(context, source) as mesh:
-        digest.update(source_signature(mesh, 0.0).encode("ascii"))
-        digest.update(_colour_inputs_fingerprint(mesh, settings))
+    del context  # Kept in the public signature for existing callers.
+    mesh = source.data
+    digest.update(_RUNTIME_KEY_EPOCH)
+    digest.update(struct.pack(
+        "<4Q3I",
+        _runtime_id_pointer(source),
+        _runtime_id_revision(source),
+        _runtime_id_pointer(mesh),
+        _runtime_id_revision(mesh),
+        len(mesh.vertices),
+        len(mesh.edges),
+        len(mesh.polygons),
+    ))
+    digest.update(_runtime_colour_inputs_fingerprint(source, settings))
     digest.update(struct.pack("<d", float(settings.voxel_size)))
     digest.update(b"\x01" if settings.auto_watertight_copy else b"\x00")
     digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
@@ -1013,7 +1364,7 @@ def preview_sampling_key(
 
 
 def _diagnostic_message(prefix: str, diagnostics: dict[str, int | bool]) -> str:
-    return (
+    message = (
         f"{prefix}: {diagnostics['boundary_edges']} boundary edge(s), "
         f"{diagnostics['overfull_edges']} edge(s) with more than two faces, "
         f"{diagnostics['wire_edges']} wire edge(s), "
@@ -1022,6 +1373,9 @@ def _diagnostic_message(prefix: str, diagnostics: dict[str, int | bool]) -> str:
         f"{diagnostics['components']} component(s), "
         f"{diagnostics['vertices']} vertices, {diagnostics['faces']} faces."
     )
+    if not bool(diagnostics.get("complete", True)):
+        message += " Fast readiness scan stopped at the first blocking condition; use Check Surface for full counts."
+    return message
 
 
 def _hide_helper(helper: bpy.types.Object) -> None:
@@ -1722,12 +2076,15 @@ class ColourSampler:
         auto_material_images: bool = True,
         filter_mode: str = "BILINEAR",
         image_cache_budget_bytes: int = DEFAULT_CACHE_MEMORY_MB * 1024 * 1024,
+        adaptive_features: bool = True,
     ):
         self.mesh = mesh
         self.fallback = tuple(float(component) for component in fallback)
         self.filter_mode = filter_mode if filter_mode in {"NEAREST", "BILINEAR"} else "BILINEAR"
+        self.adaptive_features = bool(adaptive_features)
         self.source_bvh = None
         self.triangles_by_polygon: dict[int, list[object]] = {}
+        self._loop_triangles_ready = False
         self.material_entries: dict[
             int,
             tuple[Optional[_ImageBuffer], Optional[object], tuple[float, ...]],
@@ -1785,10 +2142,9 @@ class ColourSampler:
                 all_triangles=False,
             )
 
-        mesh.calc_loop_triangles()
-        for triangle in mesh.loop_triangles:
-            self.triangles_by_polygon.setdefault(triangle.polygon_index, []).append(triangle)
-        self.edge_features = self._build_edge_features()
+        # Uniform sampling never reads geometry-edge error.  Deferring this
+        # O(faces) structure avoids a large, unused allocation on dense input.
+        self.edge_features = self._build_edge_features() if self.adaptive_features else {}
 
     @property
     def uses_image(self) -> bool:
@@ -1804,10 +2160,36 @@ class ColourSampler:
             self.material_entries.get(0, (None, None, self.fallback)),
         )
 
+    def _ensure_loop_triangles(self) -> None:
+        if self._loop_triangles_ready:
+            return
+        self.mesh.calc_loop_triangles()
+        for triangle in self.mesh.loop_triangles:
+            self.triangles_by_polygon.setdefault(
+                triangle.polygon_index,
+                [],
+            ).append(triangle)
+        self._loop_triangles_ready = True
+
     def _triangle_sample_data(self, point: Vector, polygon_index: int):
         best = None
         best_penalty = math.inf
-        for triangle in self.triangles_by_polygon.get(polygon_index, ()):
+        triangles: Iterable[object]
+        if 0 <= polygon_index < len(self.mesh.polygons):
+            polygon = self.mesh.polygons[polygon_index]
+            if len(polygon.vertices) == 3 and polygon.loop_total == 3:
+                triangles = (
+                    _TriangleView(
+                        tuple(int(index) for index in polygon.vertices),
+                        tuple(range(polygon.loop_start, polygon.loop_start + 3)),
+                    ),
+                )
+            else:
+                self._ensure_loop_triangles()
+                triangles = self.triangles_by_polygon.get(polygon_index, ())
+        else:
+            triangles = ()
+        for triangle in triangles:
             a, b, c = (self.mesh.vertices[index].co for index in triangle.vertices)
             weights = _barycentric_weights(point, a, b, c)
             if weights is None:
@@ -2155,7 +2537,7 @@ def prepare_sampling_session(
         with evaluated_local_mesh(context, source) as source_mesh:
             timings["evaluated_source"] = time.perf_counter() - started
             started = time.perf_counter()
-            source_diagnostics = mesh_diagnostics(source_mesh)
+            source_diagnostics = mesh_readiness_diagnostics(source_mesh)
             timings["source_diagnostics"] = time.perf_counter() - started
             started = time.perf_counter()
             source_symmetry = reflection_symmetry_diagnostics(source_mesh)
@@ -2217,6 +2599,9 @@ def prepare_sampling_session(
             auto_material_images=bool(getattr(settings, "auto_material_images", True)),
             filter_mode=str(getattr(settings, "texture_filter", "BILINEAR")),
             image_cache_budget_bytes=cache_budget_bytes(settings),
+            adaptive_features=(
+                str(getattr(settings, "sampling_mode", "UNIFORM")) == "ADAPTIVE"
+            ),
         )
         timings["colour_sampler"] = time.perf_counter() - started
 
@@ -2870,6 +3255,7 @@ def _sample_surface_voxels_from_meshes_iter(
             auto_material_images=bool(getattr(settings, "auto_material_images", True)),
             filter_mode=str(getattr(settings, "texture_filter", "BILINEAR")),
             image_cache_budget_bytes=cache_budget_bytes(settings),
+            adaptive_features=adaptive_enabled,
         )
     )
     analysis_cell_size = voxel_size if adaptive_enabled else 0.0
@@ -3246,7 +3632,7 @@ def sample_surface_voxels_iter(
         )
     else:
         with evaluated_local_mesh(context, source) as source_mesh:
-            source_diagnostics = mesh_diagnostics(source_mesh)
+            source_diagnostics = mesh_readiness_diagnostics(source_mesh)
             source_symmetry = reflection_symmetry_diagnostics(source_mesh)
             sampling_object, helper_rebuilt = ensure_sampling_object(
                 context,

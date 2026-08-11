@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.1 - 2026-08-11
+
+- Made the `N > Voxelizer` panel passive. Opening or redrawing it no longer
+  traverses source topology; the new **Check Surface** action performs one
+  explicit full inspection and caches the result until geometry changes.
+- Replaced full geometry/UV Preview-key hashing with depsgraph-revision-aware,
+  bounded fingerprints. A 1.47-million-face source now builds its first key in
+  26.9 ms instead of approximately 12.1 seconds.
+- Added a conservative axis-distribution rejection before exact reflection
+  proof, shared coordinate/topology state across axes, and retained exact
+  vertex/edge/polygon proof for every possible symmetry axis.
+- Made Uniform colour sampling lazy: adaptive edge features and global loop
+  triangle maps are no longer built when they cannot affect the result.
+- Replaced scalar geometry signatures with bulk `foreach_get` buffers and
+  added a first-blocking-condition readiness scan for Bake. The explicit
+  surface inspector still reports complete defect and component counts.
+- Tightened CLI target fitting so every success is inside the requested
+  tolerance, all attempts reuse one source session, and an out-of-range result
+  is never saved or reported as PASS.
+- On the 1.47-million-face Tripo acceptance source, SourceSession preparation
+  fell from 78.83 s to 6.38 s. The previously duplicated 2K CLI run fell from
+  185.35 s to 17.7 s end-to-end, including import, eight fit attempts, colour,
+  editable carrier creation, and save; the accepted result contained 1,934
+  voxels for a 2,000 +/-5% request.
+
 ## 0.8.0 - 2026-08-11
 
 - Added Auto/GPU/CPU compute backends for batched image sampling. Interactive

@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.8.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
+**Version / 版本：** 0.8.1 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -94,6 +94,19 @@ detail-aware upsampling from general version and render-pipeline differences.
 Chromoxel converts selected meshes into coloured surface-voxel shells. Its
 Geometry Nodes point Preview is now a durable editable voxel model, with four
 Bake targets and MagicaVoxel `.vox` interchange.
+
+### What is new in 0.8.1
+
+- Opening `N > Voxelizer` is passive and does not inspect mesh topology.
+  **Check Surface** is an explicit, cached full diagnostic.
+- Dense-source preparation uses bounded Preview keys, bulk geometry hashes,
+  fast readiness rejection, conservative symmetry prechecks, and lazy Uniform
+  colour structures without weakening exact symmetry proof on possible axes.
+- CLI target fitting reuses one session for every attempt, accepts only the
+  requested tolerance, and never saves an out-of-range fallback as PASS.
+- On the 1.47-million-face Tripo benchmark, SourceSession preparation fell
+  from 78.83 s to 6.38 s; the formerly duplicated 2K CLI job fell from
+  185.35 s to 17.7 s end-to-end, including import and save.
 
 ### What is new in 0.8
 
@@ -192,14 +205,14 @@ the CPU, so total GPU gain depends on how texture-heavy the source is.
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.8.0-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.8.1-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.8.0.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.8.1.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -212,9 +225,12 @@ top-level `voxelizer` directory inside the archive.
 6. Keep **Auto Material Images** enabled. Select an Image Override only when
    automatic material discovery is not the desired source.
 7. Keep **Auto Watertight Copy** enabled for open or non-manifold meshes.
-8. Click **Estimate Work**, then **Add / Update Chromoxel**.
-9. Select the Preview to use **Voxel Edit**, palette tools, or `.vox` export.
-10. Choose a **Bake Output**, then use **Bake to Mesh** for Cycles/export.
+8. **Check Surface** is optional: click it only when you want complete boundary
+   and component counts. Merely opening the panel performs no mesh analysis;
+   Preview and Bake run their own fast readiness check when requested.
+9. Click **Estimate Work**, then **Add / Update Chromoxel**.
+10. Select the Preview to use **Voxel Edit**, palette tools, or `.vox` export.
+11. Choose a **Bake Output**, then use **Bake to Mesh** for Cycles/export.
 
 Under **Advanced**, keep **Compute Backend: Auto** for normal interactive use.
 Set a smaller **GPU Memory Limit** for constrained GPUs; any oversized batch
@@ -350,6 +366,17 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
 现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
 
+### 0.8.1 新功能
+
+- 打开 `N > Voxelizer` 只绘制轻量 UI，不再自动检查网格拓扑；完整诊断改为显式、可缓存的
+  **Check Surface（检查表面）**。
+- 高密度模型使用有界 Preview key、批量几何哈希、快速就绪判断、保守的对称预检和
+  Uniform 延迟颜色结构；所有仍可能对称的轴继续执行严格对称证明。
+- CLI 的全部目标拟合尝试共用一个 SourceSession，只接受指定误差范围，超差结果不会再被
+  保存或误报为 PASS。
+- 在 147 万面 Tripo 基准中，SourceSession 从 78.83 秒降至 6.38 秒；原先重复预处理的
+  2K CLI 任务从 185.35 秒降至端到端 17.7 秒（包含导入与保存）。
+
 ### 0.8 新功能
 
 - 新增 **Auto / GPU / CPU 计算后端**。在交互式 GPU 上下文中，Uniform 模式的纹理颜色
@@ -420,14 +447,14 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.8.0-extension.zip`。
+   `chromoxel-blender-0.8.1-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.8.0.zip`。
+`chromoxel-blender-0.8.1.zip`。
 
 ### 快速开始
 
@@ -439,9 +466,11 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 6. 保持 **Auto Material Images** 开启；只有自动材质识别不是所需来源时才设置
    **Image Override**。
 7. 对开放或非流形模型保持 **Auto Watertight Copy** 开启。
-8. 点击 **Estimate Work**，再点击 **Add / Update Chromoxel**。
-9. 选择 Preview 后可使用 **Voxel Edit**、调色板工具或导出 `.vox`。
-10. 选择 **Bake Output**，再点击 **Bake to Mesh** 用于 Cycles 或导出。
+8. **Check Surface（检查表面）**是可选操作：仅在需要完整边界边与连通分量统计时
+   点击。单纯打开面板不会分析网格；Preview/Bake 会在执行时使用快速就绪检查。
+9. 点击 **Estimate Work**，再点击 **Add / Update Chromoxel**。
+10. 选择 Preview 后可使用 **Voxel Edit**、调色板工具或导出 `.vox`。
+11. 选择 **Bake Output**，再点击 **Bake to Mesh** 用于 Cycles 或导出。
 
 普通交互使用可在 **Advanced** 中保持 **Compute Backend: Auto**。显存较小的显卡可下调
 **GPU Memory Limit**；超出限制时会自动改用 CPU，不会强行申请显存。
