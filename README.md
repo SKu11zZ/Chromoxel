@@ -18,6 +18,28 @@ covers curved surfaces, holes, corners, thin features, and symmetric forms.
 Blender 版本使用猴头、UV 球、圆环和凹 NGON 棱柱，在粗、中、细三种体素尺寸下进行验证，
 覆盖曲面、孔洞、棱角、薄结构和对称模型等情况。
 
+### Character-scale voxel budgets / 角色级体素预算
+
+![Three textured characters compared at original, 2K, 20K, and 100K uniform voxel levels](docs/images/chromoxel-character-uniform-levels.png)
+
+Three textured characters are compared as the original meshes and at
+approximately 2K, 20K, and 100K uniform voxel budgets. This Chromoxel 0.7 CLI
+acceptance image demonstrates progressive silhouette convergence,
+texture-colour retention, and a consistent cell size within each 100K result;
+target-count fitting allows up to 5% tolerance. The Blender 0.8 implementation
+retains this output contract while accelerating source preparation, sampling,
+and colour reads.
+
+三个带纹理角色分别展示原始模型以及约 2K、20K、100K 的均匀体素预算结果。
+这张 Chromoxel 0.7 CLI 验收图展示了轮廓随体素预算逐级收敛、纹理颜色保留，
+以及每个 100K 结果内部一致的体素尺寸；目标数量拟合允许最多 5% 的误差。
+Blender 0.8 实现保持相同输出约定，并加速源数据准备、采样和颜色读取。
+
+**Character test assets / 角色测试素材：** locally supplied Mixamo character
+files used for validation. Only this rendered comparison is included; source
+meshes and textures are not redistributed. / 本图使用本地提供的 Mixamo 角色文件
+进行验证；仓库仅收录渲染对比图，不重新分发源模型与贴图。
+
 ### Full-scene comparisons / 完整场景对比
 
 ![KayKit training range compared across original, legacy uniform, new uniform, and adaptive Chromoxel rendering](docs/images/chromoxel-training-range-old-vs-adaptive.png)
