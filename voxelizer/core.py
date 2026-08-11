@@ -3737,6 +3737,103 @@ def sample_surface_voxels(
     )
 
 
+def remove_enclosed_uniform_samples(
+    sample_result: VoxelSampleResult,
+) -> tuple[VoxelSampleResult, dict[str, object]]:
+    """Remove six-neighbour interior cells from one uniform sample result.
+
+    Adaptive Preview carriers use the exact record-aware implementation in
+    ``meshing.remove_enclosed_records``. The direct legacy Bake path remains
+    conservative and skips adaptive samples instead of deleting ambiguous cells.
+    """
+
+    count = sample_result.count
+    stats = {
+        "input_voxels": count,
+        "output_voxels": count,
+        "removed_voxels": 0,
+        "exact": True,
+        "skip_reason": "",
+    }
+    if count < 7:
+        return sample_result, stats
+    if (
+        len(sample_result.sizes) != count
+        or len(sample_result.extents) != count
+        or len(sample_result.colours) != count
+        or len(sample_result.levels) != count
+        or (sample_result.source_uvs and len(sample_result.source_uvs) != count)
+    ):
+        stats.update(
+            exact=False,
+            skip_reason="sample attribute lengths do not match voxel count",
+        )
+        return sample_result, stats
+
+    grid_size = float(sample_result.sizes[0])
+    tolerance = max(1.0e-8, abs(grid_size) * 1.0e-5)
+    uniform = grid_size > 0.0 and all(
+        abs(float(size) - grid_size) <= tolerance
+        and all(abs(float(extent[axis]) - grid_size) <= tolerance for axis in range(3))
+        for size, extent in zip(sample_result.sizes, sample_result.extents)
+    )
+    if not uniform:
+        stats.update(
+            exact=False,
+            skip_reason="direct adaptive Bake requires an Editable Preview for exact filtering",
+        )
+        return sample_result, stats
+
+    reference = sample_result.centres[0]
+    coordinates = [
+        tuple(
+            int(round((float(centre[axis]) - float(reference[axis])) / grid_size))
+            for axis in range(3)
+        )
+        for centre in sample_result.centres
+    ]
+    occupancy = set(coordinates)
+    directions = (
+        (-1, 0, 0),
+        (1, 0, 0),
+        (0, -1, 0),
+        (0, 1, 0),
+        (0, 0, -1),
+        (0, 0, 1),
+    )
+    keep_indices = [
+        index
+        for index, coordinate in enumerate(coordinates)
+        if not all(
+            tuple(coordinate[axis] + direction[axis] for axis in range(3)) in occupancy
+            for direction in directions
+        )
+    ]
+    removed = count - len(keep_indices)
+    if removed == 0:
+        return sample_result, stats
+
+    source_uvs = sample_result.source_uvs
+    filtered = VoxelSampleResult(
+        centres=[sample_result.centres[index] for index in keep_indices],
+        colours=[sample_result.colours[index] for index in keep_indices],
+        sizes=[sample_result.sizes[index] for index in keep_indices],
+        extents=[sample_result.extents[index] for index in keep_indices],
+        levels=[sample_result.levels[index] for index in keep_indices],
+        used_image=sample_result.used_image,
+        source_uvs=(
+            [source_uvs[index] for index in keep_indices]
+            if source_uvs
+            else []
+        ),
+    )
+    stats.update(
+        output_voxels=filtered.count,
+        removed_voxels=removed,
+    )
+    return filtered, stats
+
+
 def build_voxel_mesh_iter(
     context: bpy.types.Context,
     source: bpy.types.Object,
@@ -3761,6 +3858,15 @@ def build_voxel_mesh_iter(
             used_image=used_image,
             source_uvs=[(0.0, 0.0)] * len(centres),
         )
+    filter_stats = {
+        "input_voxels": sample_result.count,
+        "output_voxels": sample_result.count,
+        "removed_voxels": 0,
+        "exact": True,
+        "skip_reason": "",
+    }
+    if bool(getattr(settings, "remove_enclosed_voxels", False)):
+        sample_result, filter_stats = remove_enclosed_uniform_samples(sample_result)
     centres = sample_result.centres
     colours = sample_result.colours
     sizes = sample_result.sizes
@@ -3851,6 +3957,10 @@ def build_voxel_mesh_iter(
                     f"Writing voxel colours for {source.name}",
                 )
         result.materials.append(ensure_colour_material())
+        # Delayed import avoids the core <-> meshing module import cycle.
+        from . import meshing
+
+        meshing.tag_filter_stats(result, filter_stats)
         result.update()
         completed = True
     finally:

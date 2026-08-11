@@ -1,5 +1,37 @@
 # Validation Record / 验证记录
 
+## Chromoxel 0.8.2 — Blender 5.1.2 PASS
+
+Date / 日期：2026-08-12
+
+### Enclosed-voxel optimization
+
+- A solid 3×3×3 Uniform block was reduced from 27 to 26 records. Realized
+  output fell from 162 to 156 polygons; Surface remained 54 polygons and
+  Greedy remained 6 polygons, proving that pruning does not open cavity faces.
+- A mixed Adaptive fixture expanded to 64 exact minimum cells and removed only
+  its one completely enclosed coarse record. Opening one side retained that
+  record.
+- A 100,000-cell solid fixture was filtered in 0.6574 seconds, retaining the
+  12,448-cell exterior shell and removing 87,552 enclosed cells.
+- Blender UI/operator, CLI parser and Surface CLI path, direct Uniform Bake,
+  preserved record attributes, safe Adaptive limits, and default-off behavior
+  all passed.
+- All 0.5, 0.6, 0.7, 0.8, and 0.8.1 compatibility regressions passed. Blender's
+  extension validator parsed the 0.8.2 Extension ZIP successfully.
+
+### 封闭内部体素优化
+
+- 3×3×3 Uniform 实心块从 27 个记录减少为 26 个；实体立方体从 162 面降至 156 面，
+  Surface 仍为 54 面，Greedy 仍为 6 面，证明删除内部体素不会打开空腔面。
+- 混合 Adaptive 用例精确展开为 64 个最小单元，仅删除 1 个完全封闭的粗体素；打开任意
+  一侧后，该体素会被保留。
+- 10 万体素实心用例耗时 0.6574 秒，保留 12,448 个外壳体素，删除 87,552 个内部体素。
+- Blender 面板/操作器、CLI、直接 Uniform Bake、属性保留、安全上限和默认关闭行为均通过；
+  0.5–0.8.1 全部兼容回归及 0.8.2 扩展包解析也已通过。
+
+## Historical validation / 历史验证记录
+
 ## Blender 5.1.2 — PASS
 
 Date / 日期：2026-08-11

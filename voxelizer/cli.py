@@ -372,11 +372,37 @@ def create_editable_output(
     return output
 
 
-def bake_output(editable_output, mode: str, name: str):
+def prune_editable_output(editable_output) -> dict[str, object]:
+    records = editable.records_from_object(editable_output)
+    filtered, stats = meshing.remove_enclosed_records(
+        records,
+        float(editable_output[editable.GRID_SIZE_TAG]),
+        tuple(editable_output[editable.GRID_ORIGIN_TAG]),
+    )
+    if len(filtered) != len(records):
+        editable.replace_records(editable_output, filtered)
+    meshing.tag_filter_stats(editable_output.data, stats)
+    return stats
+
+
+def bake_output(
+    editable_output,
+    mode: str,
+    name: str,
+    *,
+    remove_enclosed: bool = False,
+):
     mode = mode.upper()
     if mode == "EDITABLE":
+        if remove_enclosed:
+            prune_editable_output(editable_output)
         return editable_output
-    mesh, _count = meshing.build_from_editable(editable_output, mode, name + "_Mesh")
+    mesh, _count = meshing.build_from_editable(
+        editable_output,
+        mode,
+        name + "_Mesh",
+        remove_enclosed=remove_enclosed,
+    )
     result = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(result)
     result.matrix_world = editable_output.matrix_world.copy()
@@ -395,6 +421,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling", choices=("uniform", "adaptive"), default="uniform")
     parser.add_argument("--detail-level", type=int, default=0)
     parser.add_argument("--bake-mode", choices=("editable", "realized", "surface", "greedy"), default="editable")
+    parser.add_argument(
+        "--remove-enclosed-voxels",
+        action="store_true",
+        help=(
+            "Remove voxels whose six axis-aligned sides are completely covered "
+            "from the chosen Bake output"
+        ),
+    )
     parser.add_argument("--normalize-height", type=float, default=0.0)
     parser.add_argument(
         "--repair-voxel-size",
@@ -480,13 +514,19 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
             voxel_size,
             name="Chromoxel_CLI_Editable",
         )
-    final_output = bake_output(output, args.bake_mode, "Chromoxel_CLI_Output")
+    final_output = bake_output(
+        output,
+        args.bake_mode,
+        "Chromoxel_CLI_Output",
+        remove_enclosed=args.remove_enclosed_voxels,
+    )
     _select_only(final_output)
     if args.export_vox:
         vox_io.export_vox(output, str(Path(args.export_vox).resolve()))
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_path), compress=True)
+    filter_mesh = final_output.data
     report = {
         "status": "PASS",
         "blender": bpy.app.version_string,
@@ -498,6 +538,20 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
         "bake_mode": args.bake_mode.upper(),
         "voxel_size": voxel_size,
         "voxel_count": sample_count,
+        "output_voxel_count": int(
+            filter_mesh.get(meshing.ENCLOSED_OUTPUT_TAG, len(output.data.vertices))
+        ),
+        "remove_enclosed_voxels": bool(args.remove_enclosed_voxels),
+        "enclosed_voxels_removed": int(
+            filter_mesh.get(meshing.ENCLOSED_REMOVED_TAG, 0)
+        ),
+        "enclosed_filter_exact": bool(
+            filter_mesh.get(meshing.ENCLOSED_EXACT_TAG, True)
+        ),
+        "enclosed_filter_skip_reason": str(
+            filter_mesh.get(meshing.ENCLOSED_SKIP_TAG, "")
+        ),
+        "output_faces": len(final_output.data.polygons),
         "target_voxels": args.target_voxels,
         "attempts": attempts,
         "compute_backend_requested": args.compute_backend.upper(),

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.2 - 2026-08-12
+
+- Added an opt-in **Remove Enclosed Voxels** Bake setting and matching
+  `--remove-enclosed-voxels` CLI flag. Existing workflows remain unchanged
+  because pruning defaults to off.
+- Added deterministic O(N) six-neighbour pruning for Uniform point carriers.
+  Kept voxel colour, UV, palette/material IDs, PBR attributes, stable IDs, and
+  all exterior or partially exposed cells intact.
+- Added conservative Adaptive filtering on the minimum-cell lattice with a
+  two-million-cell expansion ceiling. Oversized or ambiguous jobs report a
+  safe skip instead of deleting uncertain cells.
+- Kept the original occupancy mask while constructing Surface and Greedy
+  outputs, preventing a removed internal voxel from generating cavity faces.
+- Added Blender 5.1.2 regression coverage for closed/open occupancy, Realized,
+  Surface, Greedy, direct-sample, UI default, and CLI behavior.
+
 ## 0.8.1 - 2026-08-11
 
 - Made the `N > Voxelizer` panel passive. Opening or redrawing it no longer

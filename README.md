@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.8.1 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
+**Version / 版本：** 0.8.2 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -94,6 +94,19 @@ detail-aware upsampling from general version and render-pipeline differences.
 Chromoxel converts selected meshes into coloured surface-voxel shells. Its
 Geometry Nodes point Preview is now a durable editable voxel model, with four
 Bake targets and MagicaVoxel `.vox` interchange.
+
+### What is new in 0.8.2
+
+- Added an opt-in **Remove Enclosed Voxels** Bake option. It removes only cells
+  whose six axis-aligned sides are completely covered, while retaining exterior
+  silhouettes, thin parts, holes, colours, UVs, and editable material data.
+- Uniform carriers use an O(N) six-neighbour lookup. Adaptive carriers are
+  checked exactly on the minimum-cell lattice up to a bounded two-million-cell
+  safety limit; oversized expansion is skipped instead of deleting uncertain
+  geometry.
+- The option is available in the Blender UI and as
+  `--remove-enclosed-voxels` in the CLI. It defaults to off, so existing files
+  and scripts keep their prior output.
 
 ### What is new in 0.8.1
 
@@ -205,14 +218,14 @@ the CPU, so total GPU gain depends on how texture-heavy the source is.
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.8.1-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.8.2-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.8.1.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.8.2.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -230,7 +243,9 @@ top-level `voxelizer` directory inside the archive.
    Preview and Bake run their own fast readiness check when requested.
 9. Click **Estimate Work**, then **Add / Update Chromoxel**.
 10. Select the Preview to use **Voxel Edit**, palette tools, or `.vox` export.
-11. Choose a **Bake Output**, then use **Bake to Mesh** for Cycles/export.
+11. Choose a **Bake Output**. Enable **Remove Enclosed Voxels** when fully
+    surrounded cells should be pruned.
+12. Use **Bake to Mesh** for Cycles/export.
 
 Under **Advanced**, keep **Compute Backend: Auto** for normal interactive use.
 Set a smaller **GPU Memory Limit** for constrained GPUs; any oversized batch
@@ -272,6 +287,12 @@ allowing every hard-surface edge to expand through all levels.
 Editable Points is an authoring Preview. For deterministic colour in Cycles or
 external export, use Realized Cubes, Surface Mesh, or Greedy Mesh Bake.
 
+**Remove Enclosed Voxels** is deliberately conservative and defaults to off.
+For Surface and Greedy outputs, the complete occupancy mask remains active
+during face generation, so pruning an enclosed cell cannot expose a new cavity
+face. Use Surface Mesh or Greedy Mesh as well when the goal is the lowest face
+count: those modes also remove hidden shared faces between retained voxels.
+
 Output attributes:
 
 - `voxel_color`: sampled scene-linear colour.
@@ -297,12 +318,14 @@ blender --background --factory-startup --python tools/chromoxel_cli.py -- `
   --input character.fbx --output character_voxels.blend `
   --target-voxels 100000 --target-tolerance 0.05 `
   --sampling uniform --bake-mode editable `
+  --remove-enclosed-voxels `
   --compute-backend auto --gpu-batch-size 65536 `
   --gpu-memory-limit-mb 512 --report character_voxels.json
 ```
 
 Blender background mode has no interactive graphics context, so `auto` falls
 back to CPU. Use a normal Blender session when the compute backend must be GPU.
+Omit `--remove-enclosed-voxels` to keep every sampled voxel.
 
 ### Symmetry behavior
 
@@ -342,8 +365,11 @@ blender --background --factory-startup --python tests/blender_v050_regression.py
 blender --background --factory-startup --python tests/blender_v050_performance.py
 blender --background --factory-startup --python tests/blender_v060_adaptive.py
 blender --background --factory-startup --python tests/blender_v070_editable.py
+blender --background --factory-startup --python tests/blender_v070_editor_tools.py
 blender --background --factory-startup --python tests/blender_v070_scale_interchange.py
 blender --background --factory-startup --python tests/blender_v080_performance.py
+blender --background --factory-startup --python tests/blender_v081_panel_cli.py
+blender --background --factory-startup --python tests/blender_v082_enclosed.py
 # GPU parity needs a normal Blender window / graphics context:
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 ```
@@ -365,6 +391,15 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 
 Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
 现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
+
+### 0.8.2 新功能
+
+- 新增可选的 **Remove Enclosed Voxels（移除封闭内部体素）** Bake 开关。只有六个轴向
+  侧面均被完全覆盖的体素才会删除；外轮廓、薄片、孔洞、颜色、UV 和可编辑材质数据保持不变。
+- Uniform 载体使用 O(N) 的六邻域查询；Adaptive 载体会在最小体素网格上进行精确判断，
+  并设置 200 万最小单元的安全上限。超过上限时会跳过优化，而不是冒险误删几何。
+- Blender 面板与 CLI 均已支持；CLI 参数为 `--remove-enclosed-voxels`。默认关闭，已有工程
+  与脚本的输出行为不会改变。
 
 ### 0.8.1 新功能
 
@@ -447,14 +482,14 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.8.1-extension.zip`。
+   `chromoxel-blender-0.8.2-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.8.1.zip`。
+`chromoxel-blender-0.8.2.zip`。
 
 ### 快速开始
 
@@ -470,7 +505,9 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
    点击。单纯打开面板不会分析网格；Preview/Bake 会在执行时使用快速就绪检查。
 9. 点击 **Estimate Work**，再点击 **Add / Update Chromoxel**。
 10. 选择 Preview 后可使用 **Voxel Edit**、调色板工具或导出 `.vox`。
-11. 选择 **Bake Output**，再点击 **Bake to Mesh** 用于 Cycles 或导出。
+11. 选择 **Bake Output**；需要删除完全包围的内部体素时，启用
+    **Remove Enclosed Voxels（移除封闭内部体素）**。
+12. 点击 **Bake to Mesh**，用于 Cycles 或导出。
 
 普通交互使用可在 **Advanced** 中保持 **Compute Backend: Auto**。显存较小的显卡可下调
 **GPU Memory Limit**；超出限制时会自动改用 CPU，不会强行申请显存。
@@ -502,6 +539,10 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 可编辑点用于创作预览；需要在 Cycles 或外部软件中稳定获得颜色时，请使用实体立方体、
 表面网格或贪心网格 Bake。
 
+**移除封闭内部体素**采用保守判断并默认关闭。生成 Surface 或 Greedy 输出时，完整占用
+仍会参与面生成，因此删除内部体素不会打开新的空腔面。若目标是尽可能降低面数，建议同时
+使用 Surface Mesh 或 Greedy Mesh；它们还会删除保留下来的体素之间不可见的共享面。
+
 输出属性：
 
 - `voxel_color`：采样后的场景线性颜色。
@@ -525,12 +566,14 @@ blender --background --factory-startup --python tools/chromoxel_cli.py -- `
   --input character.fbx --output character_voxels.blend `
   --target-voxels 100000 --target-tolerance 0.05 `
   --sampling uniform --bake-mode editable `
+  --remove-enclosed-voxels `
   --compute-backend auto --gpu-batch-size 65536 `
   --gpu-memory-limit-mb 512 --report character_voxels.json
 ```
 
 Blender 后台模式没有交互式图形上下文，因此 `auto` 会安全回退 CPU；需要计算着色器时请在
 普通 Blender 会话中运行。
+不写 `--remove-enclosed-voxels` 时会保留全部采样体素。
 
 ### 对称性行为
 
@@ -564,8 +607,11 @@ blender --background --factory-startup --python tests/blender_v050_regression.py
 blender --background --factory-startup --python tests/blender_v050_performance.py
 blender --background --factory-startup --python tests/blender_v060_adaptive.py
 blender --background --factory-startup --python tests/blender_v070_editable.py
+blender --background --factory-startup --python tests/blender_v070_editor_tools.py
 blender --background --factory-startup --python tests/blender_v070_scale_interchange.py
 blender --background --factory-startup --python tests/blender_v080_performance.py
+blender --background --factory-startup --python tests/blender_v081_panel_cli.py
+blender --background --factory-startup --python tests/blender_v082_enclosed.py
 # GPU 颜色一致性测试需要普通 Blender 窗口 / 图形上下文：
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 ```

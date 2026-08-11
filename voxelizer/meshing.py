@@ -31,6 +31,145 @@ CUBE_CORNERS = (
     (-1, 1, 1),
     (1, 1, 1),
 )
+ENCLOSED_FILTER_ATOMIC_LIMIT = 2_000_000
+ENCLOSED_INPUT_TAG = "chromoxel_enclosed_input_voxels"
+ENCLOSED_OUTPUT_TAG = "chromoxel_enclosed_output_voxels"
+ENCLOSED_REMOVED_TAG = "chromoxel_enclosed_removed_voxels"
+ENCLOSED_EXACT_TAG = "chromoxel_enclosed_filter_exact"
+ENCLOSED_SKIP_TAG = "chromoxel_enclosed_filter_skip_reason"
+
+
+def _record_atomic_counts(record: editable.VoxelRecord, grid_size: float) -> tuple[int, int, int]:
+    return tuple(
+        max(1, int(round(float(record.extent[axis]) / grid_size)))
+        for axis in range(3)
+    )
+
+
+def _record_atomic_coordinates(
+    record: editable.VoxelRecord,
+    grid_size: float,
+    grid_origin: Sequence[float],
+):
+    counts = _record_atomic_counts(record, grid_size)
+    first_center = tuple(
+        float(record.center[axis]) - (counts[axis] - 1) * grid_size * 0.5
+        for axis in range(3)
+    )
+    for x in range(counts[0]):
+        for y in range(counts[1]):
+            for z in range(counts[2]):
+                center = (
+                    first_center[0] + x * grid_size,
+                    first_center[1] + y * grid_size,
+                    first_center[2] + z * grid_size,
+                )
+                yield editable.coordinate_for_center(center, grid_origin, grid_size)
+
+
+def _enclosed_coordinate_set(coordinates) -> set[tuple[int, int, int]]:
+    occupancy = set(coordinates)
+    return {
+        coordinate
+        for coordinate in occupancy
+        if all(
+            tuple(coordinate[axis] + direction[axis] for axis in range(3)) in occupancy
+            for direction, _indices in FACE_DIRECTIONS
+        )
+    }
+
+
+def _filter_atomic_records(records: Sequence[editable.VoxelRecord]):
+    enclosed = _enclosed_coordinate_set(record.coord for record in records)
+    return [record for record in records if record.coord not in enclosed], len(enclosed)
+
+
+def _default_filter_stats(count: int) -> dict[str, object]:
+    return {
+        "input_voxels": count,
+        "output_voxels": count,
+        "removed_voxels": 0,
+        "exact": True,
+        "skip_reason": "",
+        "atomic_cells": count,
+    }
+
+
+def remove_enclosed_records(
+    records: Sequence[editable.VoxelRecord],
+    grid_size: float,
+    grid_origin: Sequence[float],
+    *,
+    atomic_limit: int = ENCLOSED_FILTER_ATOMIC_LIMIT,
+) -> tuple[list[editable.VoxelRecord], dict[str, object]]:
+    """Conservatively remove records with no externally exposed atomic face.
+
+    Uniform carriers use six O(1) neighbour probes per voxel. Adaptive carriers
+    are checked on their minimum-cell lattice so a coarse cell is removed only
+    when every part of all six faces is covered. Oversized adaptive expansion
+    is skipped instead of risking an incorrect deletion or unbounded memory.
+    """
+
+    records = list(records)
+    stats = _default_filter_stats(len(records))
+    if len(records) < 7:
+        return records, stats
+    if grid_size <= 0.0:
+        stats.update(exact=False, skip_reason="minimum grid size is not positive")
+        return records, stats
+
+    counts = [_record_atomic_counts(record, grid_size) for record in records]
+    if all(value == (1, 1, 1) for value in counts):
+        kept, removed = _filter_atomic_records(records)
+        stats.update(
+            output_voxels=len(kept),
+            removed_voxels=removed,
+        )
+        return kept, stats
+
+    estimated_atoms = sum(value[0] * value[1] * value[2] for value in counts)
+    stats["atomic_cells"] = estimated_atoms
+    if estimated_atoms > max(1, int(atomic_limit)):
+        stats.update(
+            exact=False,
+            skip_reason=(
+                f"adaptive atomic expansion {estimated_atoms:,} exceeds "
+                f"the safe limit {int(atomic_limit):,}"
+            ),
+        )
+        return records, stats
+
+    atoms = atomic_records(records, grid_size, grid_origin)
+    if len(atoms) != estimated_atoms:
+        stats.update(
+            exact=False,
+            skip_reason=(
+                f"adaptive expansion produced {len(atoms):,} unique cells from "
+                f"{estimated_atoms:,}; overlapping or ambiguous cells were retained"
+            ),
+        )
+        return records, stats
+    enclosed_atoms = _enclosed_coordinate_set(record.coord for record in atoms)
+    kept = []
+    for record in records:
+        coordinates = tuple(_record_atomic_coordinates(record, grid_size, grid_origin))
+        if coordinates and all(coordinate in enclosed_atoms for coordinate in coordinates):
+            continue
+        kept.append(record)
+    stats.update(
+        output_voxels=len(kept),
+        removed_voxels=len(records) - len(kept),
+        atomic_cells=len(atoms),
+    )
+    return kept, stats
+
+
+def tag_filter_stats(mesh: bpy.types.Mesh, stats: dict[str, object]) -> None:
+    mesh[ENCLOSED_INPUT_TAG] = int(stats["input_voxels"])
+    mesh[ENCLOSED_OUTPUT_TAG] = int(stats["output_voxels"])
+    mesh[ENCLOSED_REMOVED_TAG] = int(stats["removed_voxels"])
+    mesh[ENCLOSED_EXACT_TAG] = bool(stats["exact"])
+    mesh[ENCLOSED_SKIP_TAG] = str(stats["skip_reason"])
 
 
 def atomic_records(
@@ -44,37 +183,21 @@ def atomic_records(
     result = {}
     next_id = max([record.voxel_id for record in records] + [0]) + 1
     for source in sorted(records, key=lambda item: (item.level, item.voxel_id)):
-        counts = tuple(
-            max(1, int(round(float(source.extent[axis]) / grid_size)))
-            for axis in range(3)
-        )
-        first_center = tuple(
-            float(source.center[axis]) - (counts[axis] - 1) * grid_size * 0.5
-            for axis in range(3)
-        )
-        for x in range(counts[0]):
-            for y in range(counts[1]):
-                for z in range(counts[2]):
-                    center = (
-                        first_center[0] + x * grid_size,
-                        first_center[1] + y * grid_size,
-                        first_center[2] + z * grid_size,
-                    )
-                    coordinate = editable.coordinate_for_center(center, grid_origin, grid_size)
-                    existing = result.get(coordinate)
-                    voxel_id = existing.voxel_id if existing is not None else next_id
-                    if existing is None:
-                        next_id += 1
-                    result[coordinate] = replace(
-                        source,
-                        voxel_id=voxel_id,
-                        coord=coordinate,
-                        center=editable.center_for_coordinate(coordinate, grid_origin, grid_size),
-                        size=grid_size,
-                        extent=(grid_size, grid_size, grid_size),
-                        level=max(source.level, 0),
-                        chunk_id=editable.chunk_id_for_coordinate(coordinate),
-                    )
+        for coordinate in _record_atomic_coordinates(source, grid_size, grid_origin):
+            existing = result.get(coordinate)
+            voxel_id = existing.voxel_id if existing is not None else next_id
+            if existing is None:
+                next_id += 1
+            result[coordinate] = replace(
+                source,
+                voxel_id=voxel_id,
+                coord=coordinate,
+                center=editable.center_for_coordinate(coordinate, grid_origin, grid_size),
+                size=grid_size,
+                extent=(grid_size, grid_size, grid_size),
+                level=max(source.level, 0),
+                chunk_id=editable.chunk_id_for_coordinate(coordinate),
+            )
     return sorted(result.values(), key=lambda item: item.coord)
 
 
@@ -163,8 +286,13 @@ def build_surface_mesh(
     records: Sequence[editable.VoxelRecord],
     mesh_name: str,
     grid_size: float,
+    *,
+    occupancy_records: Sequence[editable.VoxelRecord] | None = None,
 ) -> bpy.types.Mesh:
-    occupancy = {record.coord: record for record in records}
+    occupancy = {
+        record.coord: record
+        for record in (occupancy_records if occupancy_records is not None else records)
+    }
     vertices = []
     faces = []
     face_records = []
@@ -233,8 +361,13 @@ def build_greedy_mesh(
     mesh_name: str,
     grid_size: float,
     grid_origin: Sequence[float],
+    *,
+    occupancy_records: Sequence[editable.VoxelRecord] | None = None,
 ) -> bpy.types.Mesh:
-    occupancy = {record.coord: record for record in records}
+    occupancy = {
+        record.coord: record
+        for record in (occupancy_records if occupancy_records is not None else records)
+    }
     planes = defaultdict(dict)
     for record in records:
         x, y, z = record.coord
@@ -288,15 +421,45 @@ def build_from_editable(
     mesh_name: str,
     *,
     fill_ratio: float = 1.0,
+    remove_enclosed: bool = False,
 ) -> tuple[bpy.types.Mesh, int]:
     records = editable.records_from_object(output)
     grid_size = float(output[editable.GRID_SIZE_TAG])
     origin = tuple(output[editable.GRID_ORIGIN_TAG])
     if mode == "REALIZED":
-        return build_realized_cubes(records, mesh_name, fill_ratio=fill_ratio), len(records)
+        stats = _default_filter_stats(len(records))
+        if remove_enclosed:
+            records, stats = remove_enclosed_records(records, grid_size, origin)
+        mesh = build_realized_cubes(records, mesh_name, fill_ratio=fill_ratio)
+        tag_filter_stats(mesh, stats)
+        return mesh, len(records)
     atoms = atomic_records(records, grid_size, origin)
+    visible_atoms = atoms
+    stats = _default_filter_stats(len(atoms))
+    if remove_enclosed:
+        visible_atoms, removed = _filter_atomic_records(atoms)
+        stats.update(
+            output_voxels=len(visible_atoms),
+            removed_voxels=removed,
+            atomic_cells=len(atoms),
+        )
     if mode == "SURFACE":
-        return build_surface_mesh(atoms, mesh_name, grid_size), len(atoms)
+        mesh = build_surface_mesh(
+            visible_atoms,
+            mesh_name,
+            grid_size,
+            occupancy_records=atoms,
+        )
+        tag_filter_stats(mesh, stats)
+        return mesh, len(visible_atoms)
     if mode == "GREEDY":
-        return build_greedy_mesh(atoms, mesh_name, grid_size, origin), len(atoms)
+        mesh = build_greedy_mesh(
+            visible_atoms,
+            mesh_name,
+            grid_size,
+            origin,
+            occupancy_records=atoms,
+        )
+        tag_filter_stats(mesh, stats)
+        return mesh, len(visible_atoms)
     raise editable.EditableError(f"Unsupported editable Bake mode: {mode}")

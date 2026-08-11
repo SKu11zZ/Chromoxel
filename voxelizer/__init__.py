@@ -23,7 +23,7 @@ from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview,
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 8, 1),
+    "version": (0, 8, 2),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -354,6 +354,14 @@ class VOXELIZER_PG_settings(PropertyGroup):
             ("GREEDY", "Greedy Mesh", "Merge compatible coplanar voxel faces"),
         ),
         default="REALIZED",
+    )
+    remove_enclosed_voxels: BoolProperty(
+        name="Remove Enclosed Voxels",
+        description=(
+            "Delete voxels whose six axis-aligned sides are completely covered; "
+            "exterior silhouettes, thin parts, holes, colours, and UV data are preserved"
+        ),
+        default=False,
     )
     vox_import_size: FloatProperty(
         name="VOX Unit Size",
@@ -820,6 +828,8 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
             self._batch_total = len(editable_sources)
             outputs = []
             total_voxels = 0
+            total_removed = 0
+            skipped_reasons = []
             for index, source in enumerate(editable_sources):
                 self._batch_index = index
                 mode = settings.bake_mode
@@ -831,13 +841,30 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                     output.name = name
                     collection = source.users_collection[0] if source.users_collection else context.collection
                     collection.objects.link(output)
-                    count = len(output.data.vertices)
+                    records = editable.records_from_object(output)
+                    filter_stats = {
+                        "input_voxels": len(records),
+                        "output_voxels": len(records),
+                        "removed_voxels": 0,
+                        "exact": True,
+                        "skip_reason": "",
+                    }
+                    if settings.remove_enclosed_voxels:
+                        records, filter_stats = meshing.remove_enclosed_records(
+                            records,
+                            float(output[editable.GRID_SIZE_TAG]),
+                            tuple(output[editable.GRID_ORIGIN_TAG]),
+                        )
+                        editable.replace_records(output, records)
+                    meshing.tag_filter_stats(output.data, filter_stats)
+                    count = len(records)
                 else:
                     mesh, count = meshing.build_from_editable(
                         source,
                         mode,
                         f"{name}_Mesh",
                         fill_ratio=preview.display_cube_fill(settings),
+                        remove_enclosed=settings.remove_enclosed_voxels,
                     )
                     output = core.link_output(
                         context,
@@ -850,8 +877,17 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                 output.hide_render = False
                 output["chromoxel_bake_mode"] = mode
                 output["chromoxel_atomic_voxel_count"] = int(count)
+                removed = int(output.data.get(meshing.ENCLOSED_REMOVED_TAG, 0))
+                skip_reason = str(output.data.get(meshing.ENCLOSED_SKIP_TAG, ""))
+                output["chromoxel_remove_enclosed_voxels"] = bool(
+                    settings.remove_enclosed_voxels
+                )
+                output["chromoxel_enclosed_removed_voxels"] = removed
                 outputs.append(output)
                 total_voxels += count
+                total_removed += removed
+                if skip_reason:
+                    skipped_reasons.append(f"{source.name}: {skip_reason}")
                 self._completed_items += 1
                 yield core.SamplingProgress(
                     "BAKE_GEOMETRY",
@@ -865,10 +901,13 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                 output.select_set(True)
             if outputs:
                 context.view_layer.objects.active = outputs[-1]
-            return (
+            summary = (
                 f"Built {len(outputs)} {settings.bake_mode.lower()} output(s), "
-                f"{total_voxels:,} atomic voxels."
+                f"{total_voxels:,} atomic voxels; removed {total_removed:,} enclosed."
             )
+            if skipped_reasons:
+                summary += " Filter skipped: " + "; ".join(skipped_reasons)
+            return summary
 
         sources = core.source_objects(context, settings)
         self._batch_total = len(sources)
@@ -876,6 +915,8 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
             core.assert_name_available(core.bake_name(source))
         outputs = []
         total_voxels = 0
+        total_removed = 0
+        skipped_reasons = []
         image_sources = 0
         for index, source in enumerate(sources):
             self._batch_index = index
@@ -900,8 +941,17 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                 bpy.data.meshes.remove(mesh)
                 raise
             output.hide_render = False
+            removed = int(mesh.get(meshing.ENCLOSED_REMOVED_TAG, 0))
+            skip_reason = str(mesh.get(meshing.ENCLOSED_SKIP_TAG, ""))
+            output["chromoxel_remove_enclosed_voxels"] = bool(
+                settings.remove_enclosed_voxels
+            )
+            output["chromoxel_enclosed_removed_voxels"] = removed
             outputs.append(output)
             total_voxels += count
+            total_removed += removed
+            if skip_reason:
+                skipped_reasons.append(f"{source.name}: {skip_reason}")
             image_sources += int(used_image)
             self._completed_items += 1
         for selected in tuple(context.selected_objects):
@@ -910,10 +960,14 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
             output.select_set(True)
         if outputs:
             context.view_layer.objects.active = outputs[-1]
-        return (
+        summary = (
             f"Baked {len(outputs)} mesh(es), {total_voxels:,} voxels; "
+            f"removed {total_removed:,} enclosed; "
             f"{image_sources} source(s) used image/UV colour."
         )
+        if skipped_reasons:
+            summary += " Filter skipped: " + "; ".join(skipped_reasons)
+        return summary
 
 
 class VOXELIZER_OT_cancel_job(Operator):
@@ -1292,6 +1346,7 @@ class VOXELIZER_PT_panel(Panel):
         action_column.operator(VOXELIZER_OT_preview.bl_idname, icon="MOD_NODES")
         action_column.label(text="Preview stays editable through its Geometry Nodes modifier.")
         action_column.prop(settings, "bake_mode")
+        action_column.prop(settings, "remove_enclosed_voxels")
         action_column.operator(VOXELIZER_OT_bake.bl_idname, icon="MESH_CUBE")
         action_column.operator(VOXELIZER_OT_clear.bl_idname, icon="TRASH")
 

@@ -82,6 +82,13 @@ ZH = {
     "Emission": "自发光",
     "Palette Slot": "调色板槽",
     "Bake Output": "烘焙输出",
+    "Remove Enclosed Voxels": "移除封闭内部体素",
+    (
+        "Delete voxels whose six axis-aligned sides are completely covered; "
+        "exterior silhouettes, thin parts, holes, colours, and UV data are preserved"
+    ): (
+        "删除六个轴向侧面均被完全覆盖的体素；保留外轮廓、薄片、孔洞、颜色与 UV 数据"
+    ),
     "Editable Points": "可编辑点",
     "Realized Cubes": "实体立方体",
     "Surface Mesh": "表面网格",
