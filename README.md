@@ -26,19 +26,46 @@ Three textured characters are compared as the original meshes and at
 approximately 2K, 20K, and 100K uniform voxel budgets. This Chromoxel 0.7 CLI
 acceptance image demonstrates progressive silhouette convergence,
 texture-colour retention, and a consistent cell size within each 100K result;
-target-count fitting allows up to 5% tolerance. The Blender 0.8 implementation
-retains this output contract while accelerating source preparation, sampling,
-and colour reads.
+target-count fitting allows up to 5% tolerance. Blender 0.9.2 retains this
+output contract and exposes target-count fitting directly in the guided UI.
 
 三个带纹理角色分别展示原始模型以及约 2K、20K、100K 的均匀体素预算结果。
 这张 Chromoxel 0.7 CLI 验收图展示了轮廓随体素预算逐级收敛、纹理颜色保留，
 以及每个 100K 结果内部一致的体素尺寸；目标数量拟合允许最多 5% 的误差。
-Blender 0.8 实现保持相同输出约定，并加速源数据准备、采样和颜色读取。
+Blender 0.9.2 保持相同输出约定，并将目标数量拟合直接加入编号式操作面板。
 
 **Character test assets / 角色测试素材：** locally supplied Mixamo character
 files used for validation. Only this rendered comparison is included; source
 meshes and textures are not redistributed. / 本图使用本地提供的 Mixamo 角色文件
 进行验证；仓库仅收录渲染对比图，不重新分发源模型与贴图。
+
+### Million-face models and separated parts / 百万面模型与分离部件
+
+![Four dense Tripo models compared at original, 2K, 20K, and 100K voxel levels](docs/images/chromoxel-tripo-four-model-levels.png)
+
+Four locally supplied Tripo meshes with roughly 1.38–1.49 million source faces
+are compared at the original, approximately 2K, 20K, and 100K Uniform levels.
+Every row uses the same -45-degree view and Cycles pipeline; the labels include
+source topology, input and visible voxel counts, removed enclosed cells, final
+faces, and cell size.
+
+Blender 0.9.2 adds **Target Count** and enables **Preserve Separate Parts** by
+default. The latter prevents nearby disconnected elements—such as the balloons
+and character head in the final row—from being fused by whole-object repair,
+while stock Suzanne still keeps its automatic open-surface repair path.
+
+四个本地提供、原始面数约 138–149 万的 Tripo 模型分别展示原始模型以及约 2K、20K、
+100K 的 Uniform 结果。各行统一使用 -45° 视角和 Cycles 管线；标注包含源拓扑、输入与
+可见体素数、剔除的封闭内部体素、最终面数和体素尺寸。
+
+Blender 0.9.2 新增 **目标数量**，并默认开启 **保留分离部件**。后者会避免整物体修复把
+彼此靠近但不连接的元素粘在一起——例如最后一行的气球与角色头部——同时默认猴头仍可使用
+自动开放表面修复路径。
+
+**Dense-model test assets / 高密度模型测试素材：** locally supplied Tripo
+outputs used only for validation. The repository contains the rendered
+comparison, not the source GLB files or textures. / 使用本地提供的 Tripo 输出进行验证；
+仓库仅收录渲染对比图，不重新分发源 GLB 或贴图。
 
 ### Full-scene comparisons / 完整场景对比
 
@@ -83,28 +110,28 @@ platform-specific implementations under separate branches.
 
 | Platform | Target | Current focus | Branch |
 | --- | --- | --- | --- |
-| Blender | Blender 5.1 | Live preview, texture sampling, symmetry-safe grids, and Bake to Mesh | [Blender implementation](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
+| Blender | Blender 5.1 | Guided preview/Bake, target-count fitting, separated-part preservation, and GPU-assisted Uniform sampling | [Blender implementation](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
 | Unreal Engine | Unreal Engine 5.8 | Editor-side voxelization, BaseColor capture, and HISM scene preview | [Unreal implementation](https://github.com/SKu11zZ/Chromoxel/tree/unreal) |
 
 ### Quick start
 
 #### Blender 5.1+
 
-1. Download `chromoxel-blender-0.8.0-extension.zip` from the
+1. Download `chromoxel-blender-0.9.2-extension.zip` from the
    [Blender branch `dist`](https://github.com/SKu11zZ/Chromoxel/tree/blender/dist)
    or a GitHub Release.
 2. In Blender, choose **Edit > Preferences > Add-ons > Install from Disk**,
    select the ZIP, and enable **Chromoxel**.
 3. Create or import one or more Mesh objects, select them, then open
    **3D Viewport > Sidebar (`N`) > Voxelizer**.
-4. Choose **Active**, **Selected**, or **Collection**; set **Voxel Size**, or
-   start with a Coarse, Medium, or Fine preset. Keep **Detail Mode: Adaptive**,
-   **Auto Material Images**, and **Auto Watertight Copy** enabled for the first
-   run.
-5. Click **Estimate Work**, then **Add / Update Chromoxel** to build the
-   editable point Preview. Keep **Compute Backend: Auto** unless a specific
-   CPU or GPU path is required.
-6. Select the Preview to edit, paint, add, move, or delete individual voxels.
+4. Choose the UI language at the top, then select **Active**, **Selected**, or
+   **Collection** and one of the four Bake outputs.
+5. In Step 2 choose **Voxel Size** for Adaptive detail or **Target Count** for
+   an approximate 100–100,000 Uniform voxel budget. Keep **Preserve Separate
+   Parts** enabled when disconnected props must remain separated.
+6. Click **Add / Update Chromoxel** to build the editable point Preview. Keep
+   **Compute Backend: Auto** unless a specific CPU or GPU path is required.
+7. Select the Preview to edit, paint, add, move, or delete individual voxels.
    For deterministic Cycles rendering or export, choose a **Bake Output** and
    click **Bake to Mesh**.
 
@@ -171,7 +198,7 @@ Chromoxel 探索一套实用工作流，将带贴图的模型与场景转换为�
 
 | 平台 | 目标版本 | 当前重点 | 分支 |
 | --- | --- | --- | --- |
-| Blender | Blender 5.1 | 实时预览、贴图采样、对称安全网格和 Bake to Mesh | [Blender 实现](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
+| Blender | Blender 5.1 | 编号式预览/烘焙、目标数量拟合、分离部件保护和 GPU 辅助 Uniform 采样 | [Blender 实现](https://github.com/SKu11zZ/Chromoxel/tree/blender) |
 | Unreal Engine | Unreal Engine 5.8 | 编辑器场景体素化、BaseColor 捕获和 HISM 场景预览 | [Unreal 实现](https://github.com/SKu11zZ/Chromoxel/tree/unreal) |
 
 ### 快速上手
@@ -179,19 +206,19 @@ Chromoxel 探索一套实用工作流，将带贴图的模型与场景转换为�
 #### Blender 5.1+
 
 1. 从 [Blender 分支的 `dist`](https://github.com/SKu11zZ/Chromoxel/tree/blender/dist)
-   或 GitHub Release 下载 `chromoxel-blender-0.8.0-extension.zip`。
+   或 GitHub Release 下载 `chromoxel-blender-0.9.2-extension.zip`。
 2. 在 Blender 中选择 **Edit > Preferences > Add-ons > Install from Disk**，
    选择该 ZIP 并启用 **Chromoxel**。
 3. 创建或导入一个或多个 Mesh，选中后打开
    **3D Viewport > Sidebar（`N`）> Voxelizer**。
-4. 选择 **Active**、**Selected** 或 **Collection**，设置 **Voxel Size**，
-   或先使用 Coarse、Medium、Fine 预设。首次运行建议保持
-   **Detail Mode: Adaptive**、**Auto Material Images** 和
-   **Auto Watertight Copy** 开启。
-5. 先点击 **Estimate Work**，再点击 **Add / Update Chromoxel**，生成可编辑的
-   点 Preview。一般保持 **Compute Backend: Auto**，只有需要固定计算路径时才手动选择
-   CPU 或 GPU。
-6. 选择 Preview 后，可以编辑、上色、添加、移动或删除单个体素。需要稳定用于 Cycles
+4. 在顶部选择界面语言，再选择 **Active**、**Selected** 或 **Collection**，以及四种
+   Bake 输出之一。
+5. 在第 2 步选择 **Voxel Size** 进行 Adaptive 细分，或选择 **Target Count** 拟合约
+   100–100,000 个 Uniform 体素。分离道具需要保持间隙时请开启
+   **Preserve Separate Parts**。
+6. 点击 **Add / Update Chromoxel**，生成可编辑的点 Preview。一般保持
+   **Compute Backend: Auto**，只有需要固定计算路径时才手动选择 CPU 或 GPU。
+7. 选择 Preview 后，可以编辑、上色、添加、移动或删除单个体素。需要稳定用于 Cycles
    渲染或导出时，选择 **Bake Output**，再点击 **Bake to Mesh**。
 
 完整的 Bake 模式、`.vox` 互换、CLI、性能参数和限制见
