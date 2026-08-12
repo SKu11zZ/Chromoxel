@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.2 - 2026-08-12
+
+- Added **Voxel Size / Target Count** resolution control to the Blender panel.
+  Target Count fits a Uniform surface grid within the selected tolerance,
+  defaults to at most 5% below target, never accepts an over-target result, and supports Preview
+  plus Editable, Realized, Surface, and Greedy Bake outputs.
+- Added a default-on **Preserve Separate Parts** guard. Small multi-component
+  sources are repaired per island; large multi-part art assets sample their
+  original surface shell. Neither path passes nearby islands through one
+  whole-object Voxel Remesh, preventing bridges such as balloons sticking to a
+  face while retaining stock Suzanne's automatic closure.
+- Kept single-component non-manifold repair behavior unchanged. Users can turn
+  the guard off when a single fused watertight proxy is explicitly desired.
+- Added Blender 5.1.2 regression coverage for count fitting, panel controls,
+  editable Preview, all four Bake representations, and gap preservation.
+
 ## 0.9.1 - 2026-08-12
 
 - Fixed Blender 5.1 icon compatibility errors (`MOD_NODES` and the later

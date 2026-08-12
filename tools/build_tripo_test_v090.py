@@ -30,35 +30,6 @@ from voxelizer import cli, core, editable, meshing  # noqa: E402
 TARGETS = (2_000, 20_000, 100_000)
 OLD_KEYS = ("214730", "220646")
 NEW_KEYS = ("112043", "112406")
-ORIGINAL_READINESS = core.mesh_readiness_diagnostics
-
-
-def permissive_readiness(mesh):
-    """Accept dense Tripo sources with a tiny boundary defect for this test.
-
-    The supplied meshes have at most a handful of open edges among more than a
-    million faces. Sampling their original shell is more faithful than a coarse
-    voxel-remesh repair. This override is local to the visual test script; it
-    does not change Chromoxel's production surface policy.
-    """
-
-    diagnostics = ORIGINAL_READINESS(mesh)
-    # The fast production diagnostic stops at the first defect. For this
-    # explicit Tripo fixture, one discovered boundary edge is the known case.
-    if (
-        not diagnostics["empty"]
-        and diagnostics["boundary_edges"] == 1
-        and diagnostics["overfull_edges"] == 0
-        and diagnostics["wire_edges"] == 0
-        and diagnostics["degenerate_faces"] == 0
-    ):
-        diagnostics["boundary_edges"] = 0
-        diagnostics["nonmanifold_edges"] = 0
-        diagnostics["components"] = 1
-        diagnostics["complete"] = True
-    return diagnostics
-
-
 def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-project", required=True, type=Path)
@@ -125,7 +96,8 @@ def sample_levels(source, settings):
         gpu_memory_limit_mb=512,
     )
     # Keep the repair proxy identical across all fit attempts.
-    settings.auto_watertight_copy = False
+    settings.auto_watertight_copy = True
+    settings.preserve_disconnected_parts = True
     settings.repair_voxel_size = 0.02
     initial_size = None
     for target in TARGETS:
@@ -242,8 +214,6 @@ def main():
     bpy.ops.wm.open_mainfile(filepath=str(args.base_project.resolve()))
     if not hasattr(bpy.types.Scene, "voxelizer_settings"):
         voxelizer.register()
-    # Visual acceptance only: retain the nearly closed million-face sources.
-    core.mesh_readiness_diagnostics = permissive_readiness
     normalize_archived_scene()
     settings = bpy.context.scene.voxelizer_settings
     source_a = import_source(args.input_a, NEW_KEYS[0])

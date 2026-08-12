@@ -42,6 +42,7 @@ LEVEL_ATTRIBUTE = "voxel_level"
 MATERIAL_NAME = ".BTVM_voxel_color"
 SOURCE_SIGNATURE_TAG = "_textured_voxelizer_source_signature"
 REPAIR_SIZE_TAG = "_textured_voxelizer_repair_voxel_size"
+REPAIR_STRATEGY_TAG = "_textured_voxelizer_repair_strategy"
 SOURCE_SYMMETRY_TAG = "_textured_voxelizer_source_symmetry"
 HELPER_SYMMETRY_TAG = "_textured_voxelizer_helper_symmetry"
 SAMPLING_DIAGNOSTICS_TAG = "_textured_voxelizer_sampling_diagnostics"
@@ -63,6 +64,7 @@ _IMAGE_BUFFER_CACHE: OrderedDict[tuple[object, ...], "_ImageBuffer"] = OrderedDi
 _IMAGE_BUFFER_CACHE_BYTES = 0
 _SOURCE_SESSION_CACHE: OrderedDict[str, "SourceSamplingSession"] = OrderedDict()
 _SOURCE_SESSION_CACHE_LIMIT = 2
+SEPARATE_PART_REPAIR_LIMIT = 8
 _RUNTIME_ID_REVISIONS: dict[int, int] = {}
 _RUNTIME_REVISION_SERIAL = 0
 _RUNTIME_KEY_EPOCH = hashlib.sha256(
@@ -72,6 +74,10 @@ _RUNTIME_KEY_EPOCH = hashlib.sha256(
 
 class VoxelizerError(RuntimeError):
     """A concise validation failure suitable for an operator report."""
+
+
+class SamplingInputError(VoxelizerError):
+    """Input topology prevented repair; callers may offer direct shell sampling."""
 
 
 @dataclass(frozen=True)
@@ -1089,6 +1095,47 @@ def mesh_readiness_diagnostics(mesh: bpy.types.Mesh) -> dict[str, int | bool]:
         bm.free()
 
 
+def mesh_component_count(mesh: bpy.types.Mesh, *, stop_after: int = 2) -> int:
+    """Count connected vertex islands, with an optional early-stop threshold."""
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        unseen = set(bm.verts)
+        components = 0
+        while unseen:
+            components += 1
+            if stop_after > 0 and components >= stop_after:
+                return components
+            stack = [unseen.pop()]
+            while stack:
+                vertex = stack.pop()
+                for edge in vertex.link_edges:
+                    neighbour = edge.other_vert(vertex)
+                    if neighbour in unseen:
+                        unseen.remove(neighbour)
+                        stack.append(neighbour)
+        return components
+    finally:
+        bm.free()
+
+
+def _closed_component_diagnostics_ready(
+    diagnostics: dict[str, int | bool],
+) -> bool:
+    """Accept one or more individually closed components as a sampling proxy."""
+
+    return (
+        not diagnostics["empty"]
+        and diagnostics["boundary_edges"] == 0
+        and diagnostics["overfull_edges"] == 0
+        and diagnostics["wire_edges"] == 0
+        and diagnostics["nonmanifold_edges"] == 0
+        and diagnostics["degenerate_faces"] == 0
+        and int(diagnostics["components"]) >= 1
+    )
+
+
 def _diagnostics_ready(diagnostics: dict[str, int | bool]) -> bool:
     return (
         not diagnostics["empty"]
@@ -1154,10 +1201,14 @@ def _watertight_source_signature(
     mesh: bpy.types.Mesh,
     repair_voxel_size: float,
     symmetry: dict[str, object],
+    *,
+    componentwise: bool = False,
 ) -> str:
     digest = hashlib.sha256()
+    digest.update(b"CHROMOXEL_REPAIR_STRATEGY_V3")
     digest.update(source_signature(mesh, repair_voxel_size).encode("ascii"))
     digest.update(_symmetry_cache_fingerprint(symmetry))
+    digest.update(b"\x01" if componentwise else b"\x00")
     return digest.hexdigest()
 
 
@@ -1362,6 +1413,9 @@ def preview_sampling_key(
     digest.update(_runtime_colour_inputs_fingerprint(source, settings))
     digest.update(struct.pack("<d", float(settings.voxel_size)))
     digest.update(b"\x01" if settings.auto_watertight_copy else b"\x00")
+    digest.update(
+        b"\x01" if bool(getattr(settings, "preserve_disconnected_parts", True)) else b"\x00"
+    )
     digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
     grid_mode = str(getattr(settings, "grid_origin_mode", "BOUNDS"))
     digest.update(grid_mode.encode("ascii", "ignore"))
@@ -1489,7 +1543,131 @@ def _remesh_working_object(
                 except RuntimeError:
                     pass
         if previous_active is not None and previous_active.name in bpy.data.objects:
-            context.view_layer.objects.active = previous_active
+                context.view_layer.objects.active = previous_active
+
+
+def _component_meshes(mesh: bpy.types.Mesh) -> list[bpy.types.Mesh]:
+    """Split one mesh into connected-component mesh datablocks without transforms."""
+
+    source = bmesh.new()
+    try:
+        source.from_mesh(mesh)
+        unseen = set(source.verts)
+        components = []
+        while unseen:
+            seed = unseen.pop()
+            vertices = {seed}
+            stack = [seed]
+            while stack:
+                vertex = stack.pop()
+                for edge in vertex.link_edges:
+                    neighbour = edge.other_vert(vertex)
+                    if neighbour in unseen:
+                        unseen.remove(neighbour)
+                        vertices.add(neighbour)
+                        stack.append(neighbour)
+            components.append(vertices)
+
+        result = []
+        for index, vertices in enumerate(components):
+            part_bmesh = bmesh.new()
+            try:
+                mapping = {
+                    vertex: part_bmesh.verts.new(tuple(vertex.co))
+                    for vertex in vertices
+                }
+                part_bmesh.verts.ensure_lookup_table()
+                for face in source.faces:
+                    if all(vertex in mapping for vertex in face.verts):
+                        try:
+                            part_bmesh.faces.new(tuple(mapping[vertex] for vertex in face.verts))
+                        except ValueError:
+                            pass
+                for edge in source.edges:
+                    if edge.link_faces or any(vertex not in mapping for vertex in edge.verts):
+                        continue
+                    try:
+                        part_bmesh.edges.new(tuple(mapping[vertex] for vertex in edge.verts))
+                    except ValueError:
+                        pass
+                part_mesh = bpy.data.meshes.new(f".{mesh.name}_Component_{index:03d}")
+                part_bmesh.to_mesh(part_mesh)
+                part_mesh.update()
+                result.append(part_mesh)
+            finally:
+                part_bmesh.free()
+        return result
+    finally:
+        source.free()
+
+
+def _remesh_components_separately(
+    context: bpy.types.Context,
+    working: bpy.types.Object,
+    voxel_size: float,
+) -> None:
+    """Voxel-remesh each topology island independently, then join the results."""
+
+    source_mesh = working.data
+    part_meshes = _component_meshes(source_mesh)
+    repaired_meshes = []
+    try:
+        for index, part_mesh in enumerate(part_meshes):
+            part = bpy.data.objects.new(f"{working.name}_PART_{index:03d}", part_mesh)
+            (working.users_collection[0] if working.users_collection else context.collection).objects.link(part)
+            part.matrix_world = working.matrix_world.copy()
+            part.hide_render = True
+            try:
+                _remesh_working_object(context, part, voxel_size)
+                repaired_meshes.append(part.data.copy())
+            finally:
+                data = part.data
+                bpy.data.objects.remove(part, do_unlink=True)
+                if data not in repaired_meshes and data.users == 0:
+                    bpy.data.meshes.remove(data)
+
+        combined_bmesh = bmesh.new()
+        try:
+            for repaired in repaired_meshes:
+                temporary = bmesh.new()
+                try:
+                    temporary.from_mesh(repaired)
+                    vertex_mapping = {
+                        vertex: combined_bmesh.verts.new(tuple(vertex.co))
+                        for vertex in temporary.verts
+                    }
+                    combined_bmesh.verts.ensure_lookup_table()
+                    for face in temporary.faces:
+                        try:
+                            combined_bmesh.faces.new(
+                                tuple(vertex_mapping[vertex] for vertex in face.verts)
+                            )
+                        except ValueError:
+                            pass
+                finally:
+                    temporary.free()
+            combined_mesh = bpy.data.meshes.new(f"{working.name}_PartsMesh")
+            combined_bmesh.to_mesh(combined_mesh)
+            combined_mesh.update()
+        finally:
+            combined_bmesh.free()
+        old_mesh = working.data
+        working.data = combined_mesh
+        if old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
+    finally:
+        for part_mesh in part_meshes:
+            try:
+                if part_mesh.users == 0 and bpy.data.meshes.get(part_mesh.name) is part_mesh:
+                    bpy.data.meshes.remove(part_mesh)
+            except ReferenceError:
+                pass
+        for repaired in repaired_meshes:
+            try:
+                if repaired.users == 0 and bpy.data.meshes.get(repaired.name) is repaired:
+                    bpy.data.meshes.remove(repaired)
+            except ReferenceError:
+                pass
 
 
 def _shift_mesh_for_symmetry(
@@ -1580,6 +1758,7 @@ def ensure_sampling_object(
     source_mesh: bpy.types.Mesh,
     source_diagnostics: dict[str, int | bool],
     source_symmetry: dict[str, object],
+    component_count: Optional[int] = None,
 ) -> tuple[bpy.types.Object, bool]:
     if _diagnostics_ready(source_diagnostics):
         return source, False
@@ -1591,6 +1770,30 @@ def ensure_sampling_object(
             )
         )
 
+    preserve_parts = bool(getattr(settings, "preserve_disconnected_parts", True))
+    components = (
+        int(component_count)
+        if component_count is not None
+        else int(source_diagnostics.get("components", 0))
+    )
+    if preserve_parts and components <= 1:
+        components = mesh_component_count(
+            source_mesh,
+            stop_after=SEPARATE_PART_REPAIR_LIMIT + 1,
+        )
+    direct_shell_parts = bool(
+        preserve_parts and components > SEPARATE_PART_REPAIR_LIMIT
+    )
+    componentwise_repair = bool(
+        preserve_parts and 1 < components <= SEPARATE_PART_REPAIR_LIMIT
+    )
+    if direct_shell_parts:
+        # A source with many art islands (for example a character plus props)
+        # would be expensive to remesh component-by-component. Sampling the
+        # original shell preserves every authored gap and avoids whole-object
+        # scalar-field bridges.
+        return source, False
+
     repair_size = float(settings.repair_voxel_size)
     if repair_size <= 0.0:
         raise VoxelizerError("Repair Voxel Size must be greater than zero.")
@@ -1598,6 +1801,7 @@ def ensure_sampling_object(
         source_mesh,
         repair_size,
         source_symmetry,
+        componentwise=componentwise_repair,
     )
     name = watertight_name(source)
     existing = bpy.data.objects.get(name)
@@ -1619,7 +1823,11 @@ def ensure_sampling_object(
         )
         if (
             existing.get(SOURCE_SIGNATURE_TAG) == signature
-            and _diagnostics_ready(existing_diagnostics)
+            and (
+                _closed_component_diagnostics_ready(existing_diagnostics)
+                if componentwise_repair
+                else _diagnostics_ready(existing_diagnostics)
+            )
             and symmetry_preserved
         ):
             existing.matrix_world = source.matrix_world.copy()
@@ -1638,7 +1846,10 @@ def ensure_sampling_object(
     working.hide_render = True
     try:
         _shift_mesh_for_symmetry(working.data, source_symmetry, -1.0)
-        _remesh_working_object(context, working, repair_size)
+        if componentwise_repair:
+            _remesh_components_separately(context, working, repair_size)
+        else:
+            _remesh_working_object(context, working, repair_size)
         _shift_mesh_for_symmetry(working.data, source_symmetry, 1.0)
         repaired_diagnostics, repaired_symmetry = (
             _evaluated_mesh_diagnostics_and_symmetry(context, working)
@@ -1670,16 +1881,28 @@ def ensure_sampling_object(
                 "Automatic watertight repair could not preserve proved local "
                 f"reflection symmetry on axis/axes: {', '.join(missing_axes)}."
             )
-        if not _diagnostics_ready(repaired_diagnostics):
-            raise VoxelizerError(
+        repair_ready = (
+            _closed_component_diagnostics_ready(repaired_diagnostics)
+            if componentwise_repair
+            else _diagnostics_ready(repaired_diagnostics)
+        )
+        if not repair_ready:
+            raise SamplingInputError(
                 _diagnostic_message(
-                    "Automatic watertight repair did not produce one closed manifold",
+                    (
+                        "Component-wise repair did not produce closed component shells"
+                        if componentwise_repair
+                        else "Automatic watertight repair did not produce one closed manifold"
+                    ),
                     repaired_diagnostics,
                 )
             )
         working.data.materials.clear()
         working[SOURCE_SIGNATURE_TAG] = signature
         working[REPAIR_SIZE_TAG] = repair_size
+        working[REPAIR_STRATEGY_TAG] = (
+            "COMPONENTWISE" if componentwise_repair else "WHOLE_OBJECT"
+        )
         working[SOURCE_SYMMETRY_TAG] = _symmetry_json(source_symmetry)
         working[HELPER_SYMMETRY_TAG] = _symmetry_json(repaired_symmetry)
         if existing is None:
@@ -1695,6 +1918,9 @@ def ensure_sampling_object(
             tag_output(helper, source, HELPER_KIND)
             helper[SOURCE_SIGNATURE_TAG] = signature
             helper[REPAIR_SIZE_TAG] = repair_size
+            helper[REPAIR_STRATEGY_TAG] = (
+                "COMPONENTWISE" if componentwise_repair else "WHOLE_OBJECT"
+            )
             helper[SOURCE_SYMMETRY_TAG] = _symmetry_json(source_symmetry)
             helper[HELPER_SYMMETRY_TAG] = _symmetry_json(repaired_symmetry)
         helper.matrix_world = source.matrix_world.copy()
@@ -2512,6 +2738,7 @@ class SourceSamplingSession:
     bounds_min: Vector
     bounds_max: Vector
     helper_rebuilt: bool
+    separate_parts_guard_used: bool
     base_key: str
     timings: dict[str, float]
     gpu_occupancy_resource: object | None = None
@@ -2543,6 +2770,9 @@ def _session_base_key(mesh: bpy.types.Mesh, settings) -> str:
     digest.update(_colour_inputs_fingerprint(mesh, settings))
     digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
     digest.update(b"\x01" if bool(settings.auto_watertight_copy) else b"\x00")
+    digest.update(
+        b"\x01" if bool(getattr(settings, "preserve_disconnected_parts", True)) else b"\x00"
+    )
     return digest.hexdigest()
 
 
@@ -2611,6 +2841,16 @@ def prepare_sampling_session(
             source_symmetry = reflection_symmetry_diagnostics(source_mesh)
             timings["source_symmetry"] = time.perf_counter() - started
             started = time.perf_counter()
+            source_component_count = int(source_diagnostics.get("components", 0))
+            if (
+                bool(getattr(settings, "preserve_disconnected_parts", True))
+                and not _diagnostics_ready(source_diagnostics)
+                and source_component_count <= 1
+            ):
+                source_component_count = mesh_component_count(
+                    source_mesh,
+                    stop_after=SEPARATE_PART_REPAIR_LIMIT + 1,
+                )
             sampling_object, helper_rebuilt = ensure_sampling_object(
                 context,
                 source,
@@ -2618,6 +2858,13 @@ def prepare_sampling_session(
                 source_mesh=source_mesh,
                 source_diagnostics=source_diagnostics,
                 source_symmetry=source_symmetry,
+                component_count=source_component_count,
+            )
+            separate_parts_guard_used = bool(
+                sampling_object is source
+                and bool(getattr(settings, "preserve_disconnected_parts", True))
+                and not _diagnostics_ready(source_diagnostics)
+                and source_component_count > 1
             )
             timings["sampling_helper"] = time.perf_counter() - started
             started = time.perf_counter()
@@ -2702,6 +2949,7 @@ def prepare_sampling_session(
             bounds_min=bounds_min,
             bounds_max=bounds_max,
             helper_rebuilt=helper_rebuilt,
+            separate_parts_guard_used=separate_parts_guard_used,
             base_key=base_key,
             timings=timings,
         )
@@ -2737,6 +2985,9 @@ def _source_session_cache_key(
     ))
     digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
     digest.update(b"\x01" if bool(settings.auto_watertight_copy) else b"\x00")
+    digest.update(
+        b"\x01" if bool(getattr(settings, "preserve_disconnected_parts", True)) else b"\x00"
+    )
     digest.update(_runtime_colour_inputs_fingerprint(source, settings))
     digest.update(str(getattr(settings, "sampling_mode", "UNIFORM")).encode("ascii"))
     digest.update(str(getattr(settings, "texture_filter", "BILINEAR")).encode("ascii"))
@@ -3192,6 +3443,7 @@ def _sample_surface_voxels_from_meshes_iter(
     sampling_object: bpy.types.Object,
     helper_rebuilt: bool,
     sampling_mesh: bpy.types.Mesh,
+    separate_parts_guard_used: bool = False,
     session: Optional[SourceSamplingSession] = None,
     occupancy_only: bool = False,
 ) -> Iterator[SamplingProgress]:
@@ -3798,6 +4050,7 @@ def _sample_surface_voxels_from_meshes_iter(
         "proven_axes": sorted(proven_axes),
         "helper_used": sampling_object is not source,
         "helper_rebuilt": bool(helper_rebuilt),
+        "separate_parts_guard_used": bool(separate_parts_guard_used),
         "voxel_size": voxel_size,
         "shell_distance": shell_distance,
         "lattice": lattice_report,
@@ -3958,6 +4211,7 @@ def sample_surface_voxels_iter(
             sampling_object=session.sampling_object,
             helper_rebuilt=session.helper_rebuilt,
             sampling_mesh=session.sampling_mesh,
+            separate_parts_guard_used=session.separate_parts_guard_used,
             session=session,
             occupancy_only=occupancy_only,
         )
@@ -3965,6 +4219,16 @@ def sample_surface_voxels_iter(
         with evaluated_local_mesh(context, source) as source_mesh:
             source_diagnostics = mesh_readiness_diagnostics(source_mesh)
             source_symmetry = reflection_symmetry_diagnostics(source_mesh)
+            source_component_count = int(source_diagnostics.get("components", 0))
+            if (
+                bool(getattr(settings, "preserve_disconnected_parts", True))
+                and not _diagnostics_ready(source_diagnostics)
+                and source_component_count <= 1
+            ):
+                source_component_count = mesh_component_count(
+                    source_mesh,
+                    stop_after=SEPARATE_PART_REPAIR_LIMIT + 1,
+                )
             sampling_object, helper_rebuilt = ensure_sampling_object(
                 context,
                 source,
@@ -3972,6 +4236,13 @@ def sample_surface_voxels_iter(
                 source_mesh=source_mesh,
                 source_diagnostics=source_diagnostics,
                 source_symmetry=source_symmetry,
+                component_count=source_component_count,
+            )
+            separate_parts_guard_used = bool(
+                sampling_object is source
+                and bool(getattr(settings, "preserve_disconnected_parts", True))
+                and not _diagnostics_ready(source_diagnostics)
+                and source_component_count > 1
             )
             if sampling_object is source:
                 result = yield from _sample_surface_voxels_from_meshes_iter(
@@ -3983,6 +4254,7 @@ def sample_surface_voxels_iter(
                     sampling_object=sampling_object,
                     helper_rebuilt=helper_rebuilt,
                     sampling_mesh=source_mesh,
+                    separate_parts_guard_used=separate_parts_guard_used,
                     occupancy_only=occupancy_only,
                 )
             else:
@@ -3996,6 +4268,7 @@ def sample_surface_voxels_iter(
                         sampling_object=sampling_object,
                         helper_rebuilt=helper_rebuilt,
                         sampling_mesh=sampling_mesh,
+                        separate_parts_guard_used=separate_parts_guard_used,
                         occupancy_only=occupancy_only,
                     )
 
@@ -4306,6 +4579,96 @@ def build_voxel_mesh_iter(
         if not completed and result.name in bpy.data.meshes:
             bpy.data.meshes.remove(result)
     return result, count, used_image
+
+
+def build_voxel_mesh_from_sample_iter(
+    source: bpy.types.Object,
+    settings,
+    mesh_name: str,
+    sample_result: VoxelSampleResult,
+) -> Iterator[SamplingProgress]:
+    """Build final geometry from a sample produced by target-count fitting."""
+
+    from . import editable, meshing, preview
+
+    temporary_mesh = bpy.data.meshes.new(f".{mesh_name}_TargetCarrierMesh")
+    temporary = bpy.data.objects.new(f".{mesh_name}_TargetCarrier", temporary_mesh)
+    temporary_linked = False
+    completed = False
+    try:
+        preview.configure_preview(
+            temporary,
+            sample_result.centres,
+            sample_result.colours,
+            sample_result.sizes,
+            sample_result.extents,
+            sample_result.levels,
+            preview.display_cube_fill(settings),
+            ensure_colour_material(),
+        )
+        source_collection = source.users_collection[0] if source.users_collection else bpy.context.collection
+        source_collection.objects.link(temporary)
+        temporary_linked = True
+        editable.initialize_carrier(
+            temporary,
+            reset_delta=True,
+            coordinate_ordered=True,
+        )
+        source_uvs = sample_result.source_uvs or [(0.0, 0.0)] * sample_result.count
+        source_uv_attribute = temporary.data.attributes.get(editable.SOURCE_UV_ATTRIBUTE)
+        if source_uv_attribute is not None:
+            source_uv_attribute.data.foreach_set(
+                "vector",
+                array("f", (component for uv in source_uvs for component in uv)),
+            )
+        yield SamplingProgress(
+            "BAKE_GEOMETRY",
+            0,
+            1,
+            f"Building fitted {str(settings.bake_mode).lower()} geometry for {source.name}",
+        )
+        mode = str(settings.bake_mode)
+        if mode == "EDITABLE":
+            records = editable.records_from_object(temporary)
+            filter_stats = {
+                "input_voxels": len(records),
+                "output_voxels": len(records),
+                "removed_voxels": 0,
+                "exact": True,
+                "skip_reason": "",
+            }
+            if bool(getattr(settings, "remove_enclosed_voxels", False)):
+                records, filter_stats = meshing.remove_enclosed_records(
+                    records,
+                    float(temporary[editable.GRID_SIZE_TAG]),
+                    tuple(temporary[editable.GRID_ORIGIN_TAG]),
+                )
+                editable.replace_records(temporary, records)
+            meshing.tag_filter_stats(temporary.data, filter_stats)
+            mesh = temporary.data.copy()
+            mesh.name = mesh_name
+            count = len(records)
+        else:
+            mesh, count = meshing.build_from_editable(
+                temporary,
+                mode,
+                mesh_name,
+                fill_ratio=preview.display_cube_fill(settings),
+                remove_enclosed=bool(getattr(settings, "remove_enclosed_voxels", False)),
+            )
+        completed = True
+        return mesh, count, bool(sample_result.used_image)
+    finally:
+        data = temporary.data
+        if data is not None:
+            temporary.data = None
+            if data.users == 0:
+                bpy.data.meshes.remove(data)
+        bpy.data.objects.remove(temporary, do_unlink=temporary_linked)
+        if not completed:
+            failed = bpy.data.meshes.get(mesh_name)
+            if failed is not None and failed.users == 0:
+                bpy.data.meshes.remove(failed)
 
 
 def build_voxel_mesh(

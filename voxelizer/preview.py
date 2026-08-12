@@ -587,6 +587,115 @@ def refresh_preview_iter(
     )
 
 
+def refresh_preview_from_sample(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+    sample_result,
+    *,
+    cache_key: str,
+    reason: str = "TARGET_COUNT",
+) -> PreviewUpdate:
+    """Create/update an editable Preview from an already fitted sample."""
+
+    from . import core
+
+    started = time.perf_counter()
+    name = core.preview_name(source)
+    existing = core.assert_name_available(
+        name,
+        replace_owned_preview_for=source,
+    )
+    material = core.ensure_colour_material()
+    output = existing
+    if output is None:
+        empty_mesh = bpy.data.meshes.new(f"{name}_Carrier")
+        output = core.link_output(
+            context,
+            source,
+            empty_mesh,
+            name,
+            core.PREVIEW_KIND,
+        )
+    was_editable = editable.is_editable(existing)
+    edit_operations = editable.load_delta(existing) if was_editable else []
+    try:
+        configure_preview(
+            output,
+            sample_result.centres,
+            sample_result.colours,
+            sample_result.sizes,
+            sample_result.extents,
+            sample_result.levels,
+            display_cube_fill(settings),
+            material,
+        )
+        editable.initialize_carrier(
+            output,
+            reset_delta=not was_editable,
+            coordinate_ordered=not was_editable,
+        )
+        source_uvs = sample_result.source_uvs or [(0.0, 0.0)] * sample_result.count
+        source_uv_attribute = output.data.attributes.get(editable.SOURCE_UV_ATTRIBUTE)
+        if source_uv_attribute is not None:
+            source_uv_attribute.data.foreach_set(
+                "vector",
+                array("f", (component for value in source_uvs for component in value)),
+            )
+        if edit_operations:
+            edited_records = editable.apply_delta(
+                editable.records_from_object(output),
+                edit_operations,
+                grid_origin=tuple(output[editable.GRID_ORIGIN_TAG]),
+                grid_size=float(output[editable.GRID_SIZE_TAG]),
+            )
+            editable.replace_records(output, edited_records)
+            editable.save_delta(output, edit_operations)
+    except Exception:
+        if existing is None and output.name in bpy.data.objects:
+            failed_mesh = output.data
+            bpy.data.objects.remove(output, do_unlink=True)
+            if failed_mesh.users == 0:
+                bpy.data.meshes.remove(failed_mesh)
+        raise
+
+    output.matrix_world = source.matrix_world.copy()
+    core.tag_output(output, source, core.PREVIEW_KIND)
+    point_count = len(output.data.vertices)
+    point_hash = _point_hash(
+        sample_result.centres,
+        sample_result.colours,
+        sample_result.sizes,
+        sample_result.extents,
+        sample_result.levels,
+    )
+    build_count = int(output.get(BUILD_COUNT_TAG, 0)) + 1
+    output[CACHE_KEY_TAG] = cache_key
+    output[POINT_HASH_TAG] = point_hash
+    output[BUILD_COUNT_TAG] = build_count
+    output[POINT_COUNT_TAG] = point_count
+    output[USED_IMAGE_TAG] = bool(sample_result.used_image)
+    output[CUBE_SIZE_TAG] = display_cube_size(settings)
+    _RUNTIME_CACHE[source.as_pointer()] = {
+        "output_pointer": output.as_pointer(),
+        "mesh_pointer": output.data.as_pointer(),
+        "cache_key": cache_key,
+        "point_hash": point_hash,
+        "build_count": build_count,
+    }
+    return PreviewUpdate(
+        output=output,
+        point_count=point_count,
+        used_image=bool(sample_result.used_image),
+        rebuilt=True,
+        reason=reason,
+        build_count=build_count,
+        point_hash=point_hash,
+        cube_size=display_cube_size(settings),
+        elapsed_seconds=time.perf_counter() - started,
+    )
+
+
 def refresh_preview(
     context: bpy.types.Context,
     source: bpy.types.Object,

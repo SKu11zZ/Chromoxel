@@ -1,5 +1,31 @@
 # Validation Record / 验证记录
 
+## Chromoxel 0.9.2 — Blender 5.1.2 PASS
+
+Date / 日期：2026-08-12
+
+### Target count and separate-part preservation / 目标数量与分离部件保护
+
+- A two-component open source was repaired per component and retained its
+  deliberately empty centre gap. The legacy stock-Suzanne repair and symmetry
+  regression also remained green. A closed source requested 1,000 Uniform
+  voxels and produced an accepted result inside the selected -5% to target
+  interval after bounded occupancy trials.
+- The fitted sample passed through editable Preview and all four Bake choices:
+  Editable Points, Realized Cubes, Surface Mesh, and Greedy Mesh.
+- The supplied 1,377,362-face balloon character was evaluated through the
+  formal 0.9.2 path with 159 source components. The separate-part guard used
+  the original shell (no repair helper, `separate_parts_guard_used=true`) and
+  fitted 19,740 voxels at
+  0.03880999 BU. The previous whole-object repair path failed to produce a
+  single closed manifold and was the source of inconsistent demo/UI behavior.
+- 双部件开放模型按部件分别修复，刻意留出的中央间隙没有生成桥接体素；旧版默认猴头修复与
+  对称性回归仍通过。封闭测试源请求 1,000 个统一体素，经有限次试算得到目标值以下 5%
+  容差内的结果。
+- 同一拟合结果已通过可编辑 Preview，以及可编辑点、实体立方体、表面网格和贪心网格四类 Bake。
+- 对 1,377,362 面、159 个连通部件的气球角色，0.9.2 正式路径启用了分离部件保护，直接采样
+  原始表面壳且未使用整体修复副本；20K 档得到 19,740 个体素，尺寸为 0.03880999 BU。
+
 ## Chromoxel 0.9.1 — Blender 5.1.2 PASS
 
 Date / 日期：2026-08-12

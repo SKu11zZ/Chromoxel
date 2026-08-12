@@ -17,13 +17,13 @@ from bpy.props import (
 )
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview, vox_io
+from . import cli, core, editable, editor, gpu_backend, i18n, live, meshing, preview, vox_io
 
 
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 9, 1),
+    "version": (0, 9, 2),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -57,6 +57,12 @@ def _geometry_setting_changed(settings, context) -> None:
 
 def _voxel_size_changed(settings, context) -> None:
     settings.quality_preset = "CUSTOM"
+    _geometry_setting_changed(settings, context)
+
+
+def _resolution_mode_changed(settings, context) -> None:
+    if settings.resolution_mode == "COUNT" and settings.sampling_mode != "UNIFORM":
+        settings.sampling_mode = "UNIFORM"
     _geometry_setting_changed(settings, context)
 
 
@@ -206,6 +212,15 @@ class VOXELIZER_PG_settings(PropertyGroup):
         default=True,
         update=_geometry_setting_changed,
     )
+    preserve_disconnected_parts: BoolProperty(
+        name="Preserve Separate Parts",
+        description=(
+            "Repair small sets of islands separately and sample large multi-part sources as their original shell, preserving nearby gaps. "
+            "少量网格岛逐岛修复，大量分离部件直接采样原始表面壳，以保留邻近部件之间的间隙"
+        ),
+        default=True,
+        update=_geometry_setting_changed,
+    )
     repair_voxel_size: FloatProperty(
         name="Repair Voxel Size",
         description=(
@@ -232,6 +247,67 @@ class VOXELIZER_PG_settings(PropertyGroup):
         precision=4,
         unit="LENGTH",
         update=_voxel_size_changed,
+    )
+    resolution_mode: EnumProperty(
+        name="Resolution Control",
+        description=(
+            "Choose a fixed voxel edge size or fit a target number of surface voxels. "
+            "选择固定体素边长，或拟合目标表面体素数量"
+        ),
+        items=(
+            ("SIZE", "Voxel Size", "Use one explicitly entered voxel edge size. 使用明确输入的体素边长"),
+            ("COUNT", "Target Count", "Fit a Uniform grid to the requested approximate voxel count. 将统一网格拟合到指定的大致体素数量"),
+        ),
+        default="SIZE",
+        update=_resolution_mode_changed,
+    )
+    target_voxel_count: IntProperty(
+        name="Target Voxels",
+        description=(
+            "Approximate surface-voxel target for one source model; the accepted result stays within the selected tolerance. "
+            "单个源模型的大致表面体素目标；接受结果会落在所选容差范围内"
+        ),
+        default=20_000,
+        min=100,
+        max=100_000,
+        subtype="UNSIGNED",
+        update=_geometry_setting_changed,
+    )
+    target_voxel_tolerance: FloatProperty(
+        name="Count Tolerance",
+        description=(
+            "Allowed amount below the target count; Chromoxel never accepts a result above the target. "
+            "允许结果低于目标数量的幅度；Chromoxel 不会接受超过目标的结果"
+        ),
+        default=0.05,
+        min=0.01,
+        max=0.20,
+        subtype="PERCENTAGE",
+        precision=1,
+        update=_geometry_setting_changed,
+    )
+    target_fit_iterations: IntProperty(
+        name="Fit Attempts",
+        description=(
+            "Maximum bounded occupancy trials used to fit the requested count. "
+            "拟合目标数量时允许执行的最大有界占据试算次数"
+        ),
+        default=8,
+        min=3,
+        max=16,
+        options={"HIDDEN"},
+    )
+    target_last_count: IntProperty(
+        name="Last Fitted Count",
+        default=0,
+        min=0,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    target_last_size: FloatProperty(
+        name="Last Fitted Size",
+        default=0.0,
+        min=0.0,
+        options={"HIDDEN", "SKIP_SAVE"},
     )
     sampling_mode: EnumProperty(
         name="Detail Mode",
@@ -1074,12 +1150,36 @@ class VOXELIZER_OT_preview(_VOXELIZER_OT_modal_job, Operator):
         last_update = None
         for index, source in enumerate(sources):
             self._batch_index = index
-            update = yield from preview.refresh_preview_iter(
-                context,
-                source,
-                settings,
-                force_rebuild=False,
-            )
+            if settings.resolution_mode == "COUNT":
+                sample, fitted_size, attempts = yield from cli.fit_target_voxels_iter(
+                    context,
+                    source,
+                    settings,
+                    settings.target_voxel_count,
+                    tolerance=settings.target_voxel_tolerance,
+                    max_iterations=settings.target_fit_iterations,
+                )
+                settings.voxel_size = fitted_size
+                settings.target_last_count = sample.count
+                settings.target_last_size = fitted_size
+                cache_key = core.preview_sampling_key(context, source, settings)
+                update = preview.refresh_preview_from_sample(
+                    context,
+                    source,
+                    settings,
+                    sample,
+                    cache_key=cache_key,
+                )
+                update.output["chromoxel_target_voxels"] = int(settings.target_voxel_count)
+                update.output["chromoxel_target_tolerance"] = float(settings.target_voxel_tolerance)
+                update.output["chromoxel_target_fit_attempts"] = len(attempts)
+            else:
+                update = yield from preview.refresh_preview_iter(
+                    context,
+                    source,
+                    settings,
+                    force_rebuild=False,
+                )
             update.output.hide_render = False
             self._capture_performance(settings, source)
             total_points += update.point_count
@@ -1203,14 +1303,33 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
         for index, source in enumerate(sources):
             self._batch_index = index
             name = core.bake_name(source)
-            cache_key = core.preview_sampling_key(context, source, settings)
-            mesh, count, used_image = yield from core.build_voxel_mesh_iter(
-                context,
-                source,
-                settings,
-                f"{name}_Mesh",
-                cache_key=cache_key,
-            )
+            if settings.resolution_mode == "COUNT":
+                sample, fitted_size, attempts = yield from cli.fit_target_voxels_iter(
+                    context,
+                    source,
+                    settings,
+                    settings.target_voxel_count,
+                    tolerance=settings.target_voxel_tolerance,
+                    max_iterations=settings.target_fit_iterations,
+                )
+                settings.voxel_size = fitted_size
+                settings.target_last_count = sample.count
+                settings.target_last_size = fitted_size
+                mesh, count, used_image = yield from core.build_voxel_mesh_from_sample_iter(
+                    source,
+                    settings,
+                    f"{name}_Mesh",
+                    sample,
+                )
+            else:
+                cache_key = core.preview_sampling_key(context, source, settings)
+                mesh, count, used_image = yield from core.build_voxel_mesh_iter(
+                    context,
+                    source,
+                    settings,
+                    f"{name}_Mesh",
+                    cache_key=cache_key,
+                )
             try:
                 output = core.link_output(
                     context,
@@ -1223,12 +1342,27 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                 bpy.data.meshes.remove(mesh)
                 raise
             output.hide_render = False
+            if settings.resolution_mode == "COUNT" and settings.bake_mode == "EDITABLE":
+                preview.ensure_modifier(
+                    output,
+                    core.ensure_colour_material(),
+                    preview.display_cube_fill(settings),
+                )
+                editable.initialize_carrier(
+                    output,
+                    reset_delta=True,
+                    coordinate_ordered=True,
+                )
             self._capture_performance(settings, source)
             removed = int(mesh.get(meshing.ENCLOSED_REMOVED_TAG, 0))
             skip_reason = str(mesh.get(meshing.ENCLOSED_SKIP_TAG, ""))
             output["chromoxel_remove_enclosed_voxels"] = bool(
                 settings.remove_enclosed_voxels
             )
+            if settings.resolution_mode == "COUNT":
+                output["chromoxel_target_voxels"] = int(settings.target_voxel_count)
+                output["chromoxel_target_tolerance"] = float(settings.target_voxel_tolerance)
+                output["chromoxel_target_fit_attempts"] = len(attempts)
             output["chromoxel_enclosed_removed_voxels"] = removed
             outputs.append(output)
             total_voxels += count
@@ -1371,6 +1505,10 @@ class VOXELIZER_PT_panel(Panel):
                 "UNIFORM": ("Use one voxel size across the whole source.", "整个源模型使用同一体素尺寸。"),
                 "ADAPTIVE": ("Refine texture boundaries and sharp geometry automatically.", "自动细化纹理边界与锐利几何。"),
             },
+            "resolution_mode": {
+                "SIZE": ("Use the entered voxel edge size directly.", "直接使用输入的体素边长。"),
+                "COUNT": ("Fit a Uniform grid to an approximate target count within tolerance.", "在容差范围内将统一网格拟合到大致目标数量。"),
+            },
             "grid_origin_mode": {
                 "OBJECT": ("Anchor the grid at the object's local origin.", "将网格锚定到对象局部原点。"),
                 "CUSTOM": ("Anchor the grid at a custom local coordinate.", "将网格锚定到自定义局部坐标。"),
@@ -1423,6 +1561,23 @@ class VOXELIZER_PT_panel(Panel):
         title_row.scale_y = 1.1
         title_row.label(text=tr("START HERE", "从这里开始"), icon="TOOL_SETTINGS")
         quick_box.prop(settings, "ui_language", text=tr("Language", "语言"))
+        quick_box.label(text=tr("Resolution", "分辨率"), icon="MOD_REMESH")
+        enum_buttons(quick_box, "resolution_mode", (
+            ("SIZE", "Size", "尺寸"),
+            ("COUNT", "Count", "数量"),
+        ))
+        if settings.resolution_mode == "SIZE":
+            quick_box.prop(
+                settings,
+                "voxel_size",
+                text=tr("Voxel Size", "体素尺寸"),
+            )
+        else:
+            quick_box.prop(
+                settings,
+                "target_voxel_count",
+                text=tr("Target Voxels", "目标体素数"),
+            )
 
         valid_mesh_source = (
             source is not None
@@ -1519,6 +1674,26 @@ class VOXELIZER_PT_panel(Panel):
         elif settings.task_message:
             quick_box.label(text=settings.task_message, icon="CHECKMARK")
 
+        if (
+            settings.surface_check_state in {"REPAIR", "BLOCKED"}
+            and settings.surface_check_components > 1
+        ):
+            quick_box.label(
+                text=tr(
+                    (
+                        "Separate-part guard is active; original gaps will be kept."
+                        if settings.preserve_disconnected_parts
+                        else "Multi-part repair can fuse close islands; review Step 3."
+                    ),
+                    (
+                        "分离部件保护已启用；将保留原始间隙。"
+                        if settings.preserve_disconnected_parts
+                        else "多部件整体修复可能粘连邻近部件；请检查第 3 步。"
+                    ),
+                ),
+                icon="CHECKMARK" if settings.preserve_disconnected_parts else "ERROR",
+            )
+
         source_box = step_box(
             "show_step_source", "1. Select Source", "1. 选择源模型", "OUTLINER_COLLECTION"
         )
@@ -1559,24 +1734,65 @@ class VOXELIZER_PT_panel(Panel):
             "show_step_grid", "2. Set Voxel Grid", "2. 设置体素网格", "MOD_REMESH"
         )
         if quality_box is not None:
-            row = quality_box.row(align=True)
-            for identifier, english, chinese in (
-                ("COARSE", "Coarse", "粗略"),
-                ("MEDIUM", "Medium", "中等"),
-                ("FINE", "Fine", "精细"),
-            ):
-                operator = row.operator(
-                    VOXELIZER_OT_quality_preset.bl_idname,
-                    text=tr(english, chinese),
-                    depress=settings.quality_preset == identifier,
-                )
-                operator.preset = identifier
-            quality_box.prop(settings, "voxel_size", text=tr("Voxel Size", "体素尺寸"))
-            enum_buttons(quality_box, "sampling_mode", (
-                ("UNIFORM", "Uniform", "统一"),
-                ("ADAPTIVE", "Adaptive", "自适应"),
+            quality_box.label(text=tr("Resolution Control", "分辨率控制"))
+            enum_buttons(quality_box, "resolution_mode", (
+                ("SIZE", "Voxel Size", "体素尺寸"),
+                ("COUNT", "Target Count", "目标数量"),
             ))
-            if settings.sampling_mode == "ADAPTIVE":
+            if settings.resolution_mode == "SIZE":
+                row = quality_box.row(align=True)
+                for identifier, english, chinese in (
+                    ("COARSE", "Coarse", "粗略"),
+                    ("MEDIUM", "Medium", "中等"),
+                    ("FINE", "Fine", "精细"),
+                ):
+                    operator = row.operator(
+                        VOXELIZER_OT_quality_preset.bl_idname,
+                        text=tr(english, chinese),
+                        depress=settings.quality_preset == identifier,
+                    )
+                    operator.preset = identifier
+                quality_box.prop(settings, "voxel_size", text=tr("Voxel Size", "体素尺寸"))
+            else:
+                quality_box.prop(
+                    settings,
+                    "target_voxel_count",
+                    text=tr("Target Voxels", "目标体素数"),
+                )
+                quality_box.prop(
+                    settings,
+                    "target_voxel_tolerance",
+                    text=tr("Tolerance", "允许偏差"),
+                    slider=True,
+                )
+                quality_box.label(
+                    text=tr(
+                        "Uniform only; accepted result never exceeds target.",
+                        "仅支持统一体素；接受结果不会超过目标值。",
+                    ),
+                    icon="INFO",
+                )
+                if settings.target_last_count:
+                    quality_box.label(
+                        text=tr(
+                            f"Last: {settings.target_last_count:,} voxels | {settings.target_last_size:.6g} BU",
+                            f"上次：{settings.target_last_count:,} 体素 | {settings.target_last_size:.6g} BU",
+                        ),
+                        icon="CHECKMARK",
+                    )
+            if settings.resolution_mode == "SIZE":
+                enum_buttons(quality_box, "sampling_mode", (
+                    ("UNIFORM", "Uniform", "统一"),
+                    ("ADAPTIVE", "Adaptive", "自适应"),
+                ))
+            else:
+                locked_detail = quality_box.row()
+                locked_detail.enabled = False
+                locked_detail.label(
+                    text=tr("Detail Mode: Uniform", "细节模式：统一"),
+                    icon="MESH_GRID",
+                )
+            if settings.resolution_mode == "SIZE" and settings.sampling_mode == "ADAPTIVE":
                 quality_box.prop(
                     settings,
                     "adaptive_max_level",
@@ -1602,17 +1818,26 @@ class VOXELIZER_PT_panel(Panel):
                     "grid_origin",
                     text=tr("Custom Origin", "自定义原点"),
                 )
-            quality_box.operator(
-                VOXELIZER_OT_estimate.bl_idname,
-                text=tr("Estimate Work", "估算工作量"),
-                icon="INFO",
-            )
-            quality_box.label(
-                text=settings.estimate_summary,
-                icon="CHECKMARK" if settings.estimate_ok else "ERROR",
-            )
-            if settings.estimate_detail:
-                quality_box.label(text=settings.estimate_detail)
+            if settings.resolution_mode == "SIZE":
+                quality_box.operator(
+                    VOXELIZER_OT_estimate.bl_idname,
+                    text=tr("Estimate Work", "估算工作量"),
+                    icon="INFO",
+                )
+                quality_box.label(
+                    text=settings.estimate_summary,
+                    icon="CHECKMARK" if settings.estimate_ok else "ERROR",
+                )
+                if settings.estimate_detail:
+                    quality_box.label(text=settings.estimate_detail)
+            else:
+                quality_box.label(
+                    text=tr(
+                        "Preview / Bake will fit the count in bounded trials.",
+                        "预览 / 烘焙会通过有限次试算拟合目标数量。",
+                    ),
+                    icon="INFO",
+                )
 
         repair_box = step_box(
             "show_step_surface", "3. Validate Surface", "3. 检查表面", "MESH_DATA"
@@ -1624,6 +1849,11 @@ class VOXELIZER_PT_panel(Panel):
                 text=tr("Auto Watertight Copy", "自动闭合副本"),
             )
             if settings.auto_watertight_copy:
+                repair_box.prop(
+                    settings,
+                    "preserve_disconnected_parts",
+                    text=tr("Preserve Separate Parts", "保留分离部件"),
+                )
                 repair_box.prop(
                     settings,
                     "repair_voxel_size",
@@ -1651,8 +1881,32 @@ class VOXELIZER_PT_panel(Panel):
                     )
                 elif settings.auto_watertight_copy:
                     repair_box.label(
-                        text=tr("Private repair copy will be used", "将使用私有修复副本"),
-                        icon="MOD_REMESH",
+                        text=tr(
+                            (
+                                "Original multi-part shell will be sampled"
+                                if settings.preserve_disconnected_parts
+                                and settings.surface_check_components > core.SEPARATE_PART_REPAIR_LIMIT
+                                else "Separate private repair shells will be used"
+                                if settings.preserve_disconnected_parts
+                                and settings.surface_check_components > 1
+                                else "Private repair copy will be used"
+                            ),
+                            (
+                                "将直接采样原始多部件表面壳"
+                                if settings.preserve_disconnected_parts
+                                and settings.surface_check_components > core.SEPARATE_PART_REPAIR_LIMIT
+                                else "将使用逐部件私有修复壳"
+                                if settings.preserve_disconnected_parts
+                                and settings.surface_check_components > 1
+                                else "将使用私有修复副本"
+                            ),
+                        ),
+                        icon=(
+                            "MESH_DATA"
+                            if settings.preserve_disconnected_parts
+                            and settings.surface_check_components > core.SEPARATE_PART_REPAIR_LIMIT
+                            else "MOD_REMESH"
+                        ),
                     )
                 else:
                     repair_box.label(
@@ -1670,6 +1924,49 @@ class VOXELIZER_PT_panel(Panel):
                             f"{settings.surface_check_seconds:.3f}s",
                         )
                     )
+                    if settings.surface_check_components > 1:
+                        repair_box.label(
+                            text=tr(
+                                (
+                                    "Parts will be repaired separately; gaps will be kept."
+                                    if settings.preserve_disconnected_parts
+                                    and settings.surface_check_components <= core.SEPARATE_PART_REPAIR_LIMIT
+                                    else "Original multi-part shell will preserve authored gaps."
+                                    if settings.preserve_disconnected_parts
+                                    else "Warning: whole-object Voxel Remesh may fuse nearby parts."
+                                ),
+                                (
+                                    "各部件会分别修复并保留间隙。"
+                                    if settings.preserve_disconnected_parts
+                                    and settings.surface_check_components <= core.SEPARATE_PART_REPAIR_LIMIT
+                                    else "将采样原始多部件表面壳并保留间隙。"
+                                    if settings.preserve_disconnected_parts
+                                    else "警告：整体 Voxel Remesh 可能焊接距离较近的部件。"
+                                ),
+                            ),
+                            icon="CHECKMARK" if settings.preserve_disconnected_parts else "ERROR",
+                        )
+                        repair_box.label(
+                            text=tr(
+                                (
+                                    "Each repaired component remains a separate closed shell."
+                                    if settings.preserve_disconnected_parts
+                                    and settings.surface_check_components <= core.SEPARATE_PART_REPAIR_LIMIT
+                                    else "The original surface shell will be sampled; validate thin open surfaces."
+                                    if settings.preserve_disconnected_parts
+                                    else "Separate/repair source islands before Preview for faithful gaps."
+                                ),
+                                (
+                                    "每个修复部件仍保持为独立闭合壳。"
+                                    if settings.preserve_disconnected_parts
+                                    and settings.surface_check_components <= core.SEPARATE_PART_REPAIR_LIMIT
+                                    else "将直接采样原始表面壳；请检查开放薄面是否符合预期。"
+                                    if settings.preserve_disconnected_parts
+                                    else "要保留真实间隙，请在预览前分离或修复源模型部件。"
+                                ),
+                            ),
+                            icon="INFO",
+                        )
             else:
                 repair_box.label(
                     text=tr("Select an original Mesh source", "请选择原始 Mesh 源对象"),

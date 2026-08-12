@@ -335,6 +335,128 @@ def fit_target_voxels(
     )
 
 
+def fit_target_voxels_iter(
+    context,
+    source: bpy.types.Object,
+    settings,
+    target_voxels: int,
+    *,
+    tolerance: float = 0.05,
+    max_iterations: int = 8,
+):
+    """Modal-friendly target fit that shares the public CLI solver policy.
+
+    Uniform occupancy trials reuse one prepared source session and skip colour
+    reads until the accepted size. The final yielded value is the fully coloured
+    sample, fitted size, and attempt report.
+    """
+
+    target_voxels = int(target_voxels)
+    if target_voxels < 1 or target_voxels > editable.MODEL_POINT_LIMIT:
+        raise CLIError(f"Target voxels must be between 1 and {editable.MODEL_POINT_LIMIT:,}.")
+    if str(getattr(settings, "sampling_mode", "UNIFORM")) != "UNIFORM":
+        raise CLIError("Target voxel count currently requires Uniform detail mode.")
+    tolerance = max(0.01, min(0.45, float(tolerance)))
+    desired = target_voxels * (1.0 - tolerance * 0.45)
+    lower_bound = int(math.floor(target_voxels * (1.0 - tolerance)))
+    area = max(1.0e-9, _surface_area(context, source))
+    size = math.sqrt(area * 1.65 / max(1.0, desired))
+    attempts = []
+    dense_size = None
+    sparse_size = None
+    best_size = None
+    best_count = None
+    best_error = float("inf")
+
+    original_size = float(settings.voxel_size)
+    original_gap = float(settings.cube_gap)
+    original_gap_ratio = original_gap / max(original_size, 1.0e-12)
+    original_voxel_budget = int(settings.voxel_budget)
+    settings.voxel_budget = editable.MODEL_POINT_LIMIT
+    accepted = False
+    with core.sampling_session(context, source, settings) as session:
+        try:
+            for iteration in range(1, max_iterations + 1):
+                settings.voxel_size = size
+                settings.cube_gap = min(size * 0.99, size * original_gap_ratio)
+                started = time.perf_counter()
+                candidate = yield from core.sample_surface_voxels_iter(
+                    context,
+                    source,
+                    settings,
+                    use_cache=False,
+                    session=session,
+                    occupancy_only=True,
+                )
+                count = int(candidate.count)
+                attempts.append({
+                    "iteration": iteration,
+                    "voxel_size": size,
+                    "voxels": count,
+                    "seconds": round(time.perf_counter() - started, 4),
+                    "phase": "OCCUPANCY_FIT",
+                    "session_reused": True,
+                })
+                error = abs(count - desired)
+                if count <= target_voxels and error < best_error:
+                    best_size = float(size)
+                    best_count = count
+                    best_error = error
+                if lower_bound <= count <= target_voxels:
+                    started = time.perf_counter()
+                    sample = yield from core.sample_surface_voxels_iter(
+                        context,
+                        source,
+                        settings,
+                        use_cache=True,
+                        session=session,
+                    )
+                    attempts[-1]["finalize_seconds"] = round(
+                        time.perf_counter() - started,
+                        4,
+                    )
+                    attempts[-1]["final_voxels"] = sample.count
+                    if sample.count != count:
+                        raise CLIError(
+                            "Occupancy fit and final texture sample produced different counts."
+                        )
+                    accepted = True
+                    return sample, float(size), attempts
+
+                if count > target_voxels:
+                    dense_size = max(float(size), dense_size or float("-inf"))
+                else:
+                    sparse_size = min(float(size), sparse_size or float("inf"))
+                if dense_size is not None and sparse_size is not None:
+                    if dense_size >= sparse_size:
+                        raise CLIError(
+                            "Target fitting produced a non-monotonic voxel-size bracket."
+                        )
+                    next_size = math.sqrt(dense_size * sparse_size)
+                else:
+                    next_size = size * math.sqrt(max(1, count) / max(1.0, desired))
+                    next_size *= 1.018 if count > target_voxels else 0.994
+                if abs(next_size - size) <= max(1.0e-12, abs(size) * 1.0e-9):
+                    break
+                size = next_size
+        finally:
+            settings.voxel_budget = original_voxel_budget
+            if not accepted:
+                settings.voxel_size = original_size
+                settings.cube_gap = original_gap
+
+    best_text = (
+        "none"
+        if best_size is None or best_count is None
+        else f"{best_count:,} voxels at size {best_size:.9g}"
+    )
+    raise CLIError(
+        f"Could not fit {lower_bound:,}-{target_voxels:,} voxels within "
+        f"{max_iterations} iteration(s); best under target was {best_text}. "
+        "No out-of-tolerance output was created."
+    )
+
+
 def create_editable_output(
     context,
     source: bpy.types.Object,

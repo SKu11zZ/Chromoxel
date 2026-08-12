@@ -71,7 +71,7 @@ def main() -> None:
     voxelizer.register()
     try:
         settings = bpy.context.scene.voxelizer_settings
-        assert tuple(voxelizer.bl_info["version"]) == (0, 9, 1)
+        assert tuple(voxelizer.bl_info["version"]) >= (0, 9, 1)
 
         # One invalid Blender icon aborts Panel.draw and hides every control
         # after it. Validate all literal icons against Blender 5.1's own RNA.
@@ -152,7 +152,9 @@ def main() -> None:
         property_names = (
             "ui_language", "source_scope", "source_collection", "include_hidden",
             "grid_origin_mode", "grid_origin", "live_update", "live_debounce",
-            "auto_watertight_copy", "repair_voxel_size", "voxel_size", "sampling_mode",
+            "auto_watertight_copy", "preserve_disconnected_parts", "repair_voxel_size",
+            "voxel_size", "resolution_mode", "target_voxel_count",
+            "target_voxel_tolerance", "sampling_mode",
             "adaptive_max_level", "adaptive_texture_threshold", "adaptive_geometry_angle",
             "adaptive_geometry_max_level", "cube_gap", "uv_map", "base_color_image",
             "auto_material_images", "texture_filter", "compute_backend", "gpu_batch_size",

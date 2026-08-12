@@ -32,4 +32,6 @@ check_close(1.0, 1.0)
 voxelizer.register()
 voxelizer.unregister()
 
-print("PASS chromoxel_blender_0.9.1_release_smoke")
+assert tuple(voxelizer.bl_info["version"]) == (0, 9, 2)
+
+print("PASS chromoxel_blender_0.9.2_release_smoke")

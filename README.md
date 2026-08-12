@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.9.1 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
+**Version / 版本：** 0.9.2 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -109,6 +109,21 @@ detail-aware upsampling from general version and render-pipeline differences.
 Chromoxel converts selected meshes into coloured surface-voxel shells. Its
 Geometry Nodes point Preview is now a durable editable voxel model, with four
 Bake targets and MagicaVoxel `.vox` interchange.
+
+### What is new in 0.9.2
+
+- Step 2 now offers **Voxel Size** and **Target Count**. Target Count fits one
+  Uniform size to an approximate per-model budget (100-100,000), defaults to a
+  5% tolerance below the target, and never accepts an over-target result.
+- **Preserve Separate Parts** is enabled by default in Step 3. Up to eight
+  open islands is repaired per component; a large multi-part source is sampled
+  as its original shell. Neither case sends every nearby island through one
+  whole-object Voxel Remesh. This prevents balloons from being bridged to a
+  character's face while preserving stock Suzanne's automatic repair.
+- Target Count works with editable Preview and all four Bake outputs. It uses
+  Uniform cells; choose Voxel Size when Adaptive texture/geometry refinement is
+  desired. The large-source direct-shell branch preserves gaps but does not
+  turn an open shell into a watertight volume.
 
 ### What is new in 0.9.1
 
@@ -279,14 +294,14 @@ remaining geometry work still run on the CPU.
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.9.1-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.9.2-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.9.1.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.9.2.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -294,15 +309,21 @@ top-level `voxelizer` directory inside the archive.
 1. Create or import one or more Mesh objects and select them.
 2. Open **3D Viewport > Sidebar (`N`) > Voxelizer**.
 3. Choose **Active**, **Selected**, or **Collection**.
-4. Choose a base **Voxel Size** or apply Coarse, Medium, or Fine.
-5. Keep **Detail Mode: Adaptive** and start with **Max Detail Level: 2**.
+4. In Step 2 choose either **Voxel Size** or **Target Count**. Size mode supports
+   Coarse/Medium/Fine and Adaptive detail; Count mode fits Uniform voxels within
+   the displayed tolerance.
+5. In Size mode, keep **Detail Mode: Adaptive** and start with
+   **Max Detail Level: 2**.
 6. Keep **Auto Material Images** enabled. Select an Image Override only when
    automatic material discovery is not the desired source.
-7. Keep **Auto Watertight Copy** enabled for open or non-manifold meshes.
+7. Keep **Auto Watertight Copy** enabled for open/non-manifold meshes and keep
+   **Preserve Separate Parts** enabled when nearby disconnected props must not
+   be fused. Disable it only when one whole-object repair proxy is intentional.
 8. **Check Surface** is optional: click it only when you want complete boundary
    and component counts. Merely opening the panel performs no mesh analysis;
    Preview and Bake run their own fast readiness check when requested.
-9. Click **Estimate Work**, then **Add / Update Chromoxel**.
+9. In Size mode, optionally click **Estimate Work**. Then click
+   **Add / Update Chromoxel**; Count mode performs its bounded fit at this step.
 10. Select the Preview to use **Voxel Edit**, palette tools, or `.vox` export.
 11. Choose a **Bake Output**. Enable **Remove Enclosed Voxels** when fully
     surrounded cells should be pruned.
@@ -437,6 +458,7 @@ blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
 blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
 blender --background --factory-startup --python tests/blender_v091_ui_hotfix.py
+blender --background --factory-startup --python tests/blender_v092_count_parts.py
 # GPU parity needs a normal Blender window / graphics context:
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
@@ -461,6 +483,16 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 
 Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
 现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
+
+### 0.9.2 新功能
+
+- 第 2 步新增 **体素尺寸 / 目标数量** 两种分辨率控制。目标数量会为单个模型拟合统一体素尺寸，
+  支持 100–100,000，默认允许低于目标 5%，且不会接受超过目标值的结果。
+- 第 3 步默认启用 **保留分离部件**。最多 8 个开放网格岛会逐岛修复；大量分离部件会直接采样原始
+  表面壳。两种情况都不会把所有相邻部件一起送入整物体 Voxel Remesh，因此气球等近距离道具
+  不会被错误桥接到角色脸部，同时保留默认猴头的自动修复能力。
+- 目标数量适用于可编辑 Preview 和全部四种 Bake 输出。它使用统一体素；需要纹理/几何自适应
+  细分时请使用体素尺寸模式。大量部件的直接表面采样会保留间隙，但不会把开放表面变成封闭体积。
 
 ### 0.9.1 新功能
 
@@ -584,28 +616,32 @@ CPU 逐坐标一致。97K 采样冷运行分别为 3.97/6.25 秒，热运行分�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.9.1-extension.zip`。
+   `chromoxel-blender-0.9.2-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.9.1.zip`。
+`chromoxel-blender-0.9.2.zip`。
 
 ### 快速开始
 
 1. 创建或导入一个或多个 Mesh 并选中。
 2. 打开 **3D Viewport > Sidebar（`N`）> Voxelizer**。
 3. 选择 **Active**、**Selected** 或 **Collection**。
-4. 设置基础 **Voxel Size**，或使用 Coarse、Medium、Fine 预设。
-5. 保持 **Detail Mode: Adaptive**，初次使用建议 **Max Detail Level: 2**。
+4. 在第 2 步选择 **体素尺寸** 或 **目标数量**。尺寸模式支持 Coarse/Medium/Fine 和自适应；
+   数量模式会在显示的容差内拟合统一体素。
+5. 使用尺寸模式时，保持 **Detail Mode: Adaptive**，初次使用建议
+   **Max Detail Level: 2**。
 6. 保持 **Auto Material Images** 开启；只有自动材质识别不是所需来源时才设置
    **Image Override**。
-7. 对开放或非流形模型保持 **Auto Watertight Copy** 开启。
+7. 对开放或非流形模型保持 **Auto Watertight Copy** 开启；相邻但分离的道具需要保留间隙时，
+   保持 **Preserve Separate Parts（保留分离部件）** 开启。只有明确需要整物体修复代理时才关闭。
 8. **Check Surface（检查表面）**是可选操作：仅在需要完整边界边与连通分量统计时
    点击。单纯打开面板不会分析网格；Preview/Bake 会在执行时使用快速就绪检查。
-9. 点击 **Estimate Work**，再点击 **Add / Update Chromoxel**。
+9. 尺寸模式可先点 **Estimate Work**；然后点击 **Add / Update Chromoxel**。数量模式会在此时
+   自动执行有限次目标拟合。
 10. 选择 Preview 后可使用 **Voxel Edit**、调色板工具或导出 `.vox`。
 11. 选择 **Bake Output**；需要删除完全包围的内部体素时，启用
     **Remove Enclosed Voxels（移除封闭内部体素）**。
@@ -719,6 +755,7 @@ blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
 blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
 blender --background --factory-startup --python tests/blender_v091_ui_hotfix.py
+blender --background --factory-startup --python tests/blender_v092_count_parts.py
 # GPU 一致性测试需要普通 Blender 窗口 / 图形上下文：
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
