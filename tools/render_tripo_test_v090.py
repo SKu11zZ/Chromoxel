@@ -231,7 +231,7 @@ def place_and_realize(key, text_material):
     original = bpy.data.objects[f"{key}_ORIGINAL"]
     points = carriers(key)
     model_objects = [original, *points]
-    yaw = math.radians(45.0)
+    yaw = math.radians(-45.0)
     for index, obj in enumerate(model_objects):
         obj.location = (POSITIONS[index], 0.0, 0.0)
         obj.rotation_euler = (0.0, 0.0, yaw)
@@ -320,7 +320,7 @@ def place_and_realize(key, text_material):
             f"V090_LABEL_{key}_{index}",
         )
     title = add_text(
-        f"TRIPO {key}  /  CHROMOXEL 0.9.0  /  45 DEG  /  CYCLES",
+        f"TRIPO {key}  /  CHROMOXEL 0.9.0  /  -45 DEG  /  CYCLES",
         (-11.5, -5.1, 6.55),
         0.30,
         text_material,
@@ -366,7 +366,7 @@ def main(args):
             "path": str(path),
             "seconds": round(time.perf_counter() - started, 3),
             "mesh_stats": stats,
-            "camera_degrees": 45,
+            "camera_degrees": -45,
         }
         mark(f"{key} render complete {renders[key]['seconds']}")
         original.hide_render = True

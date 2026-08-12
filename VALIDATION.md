@@ -28,7 +28,7 @@ Date / 日期：2026-08-12
 - A second Tripo pair with 1,491,682 and 1,377,362 source faces produced
   1,975/19,654/99,152 and 1,965/19,374/98,215 input voxels. Together with the
   archived astronaut and tank, all four models were rebuilt as Realized Cubes,
-  filtered for enclosed voxels, rendered at a common 45-degree Cycles/OptiX
+  filtered for enclosed voxels, rendered at a common -45-degree Cycles/OptiX
   setup, and assembled into one four-row acceptance image.
 - The numbered workflow UI regression verified that language, output type,
   Preview, and Bake precede Step 1 and that every visible workflow heading
@@ -48,7 +48,7 @@ Date / 日期：2026-08-12
 - 一次性源准备仍分别需要 6.44/10.44 秒；Preview 与直接 Bake 现会复用两条 Source Session，
   手动清缓存会关闭快照并释放 GPU 资源。
 - 新增的两个 Tripo 模型分别有 1,491,682 与 1,377,362 个源面，三档输入体素为
-  1,975/19,654/99,152 与 1,965/19,374/98,215。它们与旧宇航员、坦克统一采用 45°
+  1,975/19,654/99,152 与 1,965/19,374/98,215。它们与旧宇航员、坦克统一采用 -45°
   Cycles/OptiX、Realized Cubes 和内部体素剔除，并合成为四行视觉验收图。
 - 编号式 UI 回归确认语言、输出类型、预览和 Bake 位于第 1 步之前；所有可见流程标题均可在
   中英文之间完整切换，绘制面板时仍不会遍历模型拓扑。

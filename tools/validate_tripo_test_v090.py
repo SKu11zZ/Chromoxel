@@ -36,7 +36,7 @@ def main():
     checked = []
     for key, expected in EXPECTED_COUNTS.items():
         original = bpy.data.objects[f"{key}_ORIGINAL"]
-        assert abs(original.rotation_euler.z - 0.7853981633974483) < 1.0e-4
+        assert abs(original.rotation_euler.z + 0.7853981633974483) < 1.0e-4
         carriers = sorted(
             (
                 obj for obj in bpy.data.objects
@@ -46,6 +46,7 @@ def main():
         )
         assert tuple(len(obj.data.vertices) for obj in carriers) == expected
         for target, carrier in zip((2_000, 20_000, 100_000), carriers):
+            assert abs(carrier.rotation_euler.z + 0.7853981633974483) < 1.0e-4
             count = len(carrier.data.vertices)
             assert int(target * 0.95) <= count <= target
             render_object = bpy.data.objects[f"V090_RENDER_{carrier.name}"]
@@ -59,6 +60,7 @@ def main():
                 "faces": len(render_object.data.polygons),
             })
         render_path = Path(report["render"]["renders"][key]["path"])
+        assert report["render"]["renders"][key]["camera_degrees"] == -45
         assert render_path.is_file() and render_path.stat().st_size > 1_000_000
     combined = Path(report["render"]["combined"])
     assert combined.is_file() and combined.stat().st_size > 2_000_000

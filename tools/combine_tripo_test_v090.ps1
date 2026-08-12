@@ -59,7 +59,7 @@ try {
             $titleFont, $titleBrush, 64.0, 17.0
         )
         $graphics.DrawString(
-            'Original + ~2K / ~20K / ~100K uniform levels  |  45 degree view  |  enclosed voxels removed',
+            'Original + ~2K / ~20K / ~100K uniform levels  |  -45 degree view  |  enclosed voxels removed',
             $subtitleFont, $subtitleBrush, 66.0, 59.0
         )
         $y = $headerHeight

@@ -82,12 +82,12 @@ detail-aware upsampling from general version and render-pipeline differences.
 
 > Four locally supplied 1.38–1.49-million-face Tripo meshes are shown as the
 > original and at approximately 2K, 20K, and 100K Uniform input voxels. Every
-> row uses the same 45-degree camera, Cycles/OptiX lighting, and enclosed-voxel
+> row uses the same -45-degree model view, Cycles/OptiX lighting, and enclosed-voxel
 > optimization. The labels report source topology, input and visible voxel
 > counts, removed enclosed cells, final faces, and cell size.
 >
 > 四个本地提供的约 138–149 万面 Tripo 模型分别展示原始模型和约 2K、20K、100K
-> Uniform 输入体素。四行统一使用 45° 相机、Cycles/OptiX 光照与内部体素剔除；标签列出
+> Uniform 输入体素。四行统一使用 -45° 模型朝向、Cycles/OptiX 光照与内部体素剔除；标签列出
 > 源拓扑、输入/可见体素、删除的内部体素、最终面数与体素尺寸。仅包含渲染结果，不重新分发
 > 源 GLB 或贴图。
 
