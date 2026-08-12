@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.9.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
+**Version / 版本：** 0.9.1 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -109,6 +109,19 @@ detail-aware upsampling from general version and render-pipeline differences.
 Chromoxel converts selected meshes into coloured surface-voxel shells. Its
 Geometry Nodes point Preview is now a durable editable voxel model, with four
 Bake targets and MagicaVoxel `.vox` interchange.
+
+### What is new in 0.9.1
+
+- Fixed a Blender 5.1 icon compatibility error that stopped N-panel drawing
+  immediately after the four Bake-output choices. The complete start path and
+  numbered workflow now render in both narrow and wide sidebars.
+- Replaced the ambiguous collapsed header with a permanent **START HERE** area.
+  It always shows language, source readiness, output type, a large
+  **CREATE PREVIEW** button, and a large **START BAKE** button.
+- Added concise bilingual hover help to every visible setting, mode choice,
+  and primary editing/export action. Each tooltip explains what the option
+  changes and when to use it; drawing remains passive and never inspects mesh
+  topology.
 
 ### What is new in 0.9.0
 
@@ -266,14 +279,14 @@ remaining geometry work still run on the CPU.
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.9.0-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.9.1-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.9.0.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.9.1.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -423,6 +436,7 @@ blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
 blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
+blender --background --factory-startup --python tests/blender_v091_ui_hotfix.py
 # GPU parity needs a normal Blender window / graphics context:
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
@@ -447,6 +461,15 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 
 Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
 现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
+
+### 0.9.1 新功能
+
+- 修复 Blender 5.1 图标兼容错误。该错误会让 N 面板在四个烘焙输出选项之后停止绘制；修复后，
+  窄侧栏和宽侧栏均会完整显示启动入口与编号工作流。
+- 将容易误解的折叠标题改为永久显示的 **从这里开始** 区域，固定展示语言、源模型状态、输出类型、
+  大号 **创建预览** 按钮和大号 **开始烘焙** 按钮。
+- 为所有可见设置、模式选择以及主要编辑/导出操作补齐简洁的中英双语悬浮说明。每条说明会解释
+  该选项影响什么以及何时使用；绘制面板仍然是被动操作，不会检查模型拓扑。
 
 ### 0.9.0 新功能
 
@@ -561,14 +584,14 @@ CPU 逐坐标一致。97K 采样冷运行分别为 3.97/6.25 秒，热运行分�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.9.0-extension.zip`。
+   `chromoxel-blender-0.9.1-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.9.0.zip`。
+`chromoxel-blender-0.9.1.zip`。
 
 ### 快速开始
 
@@ -695,6 +718,7 @@ blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
 blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
+blender --background --factory-startup --python tests/blender_v091_ui_hotfix.py
 # GPU 一致性测试需要普通 Blender 窗口 / 图形上下文：
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py

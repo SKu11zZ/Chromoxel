@@ -463,6 +463,7 @@ def import_vox(context, filepath: str, voxel_size: float) -> tuple[bpy.types.Obj
 class VOXELIZER_OT_import_vox(Operator, ImportHelper):
     bl_idname = "voxelizer.import_vox"
     bl_label = "Import MagicaVoxel (.vox)"
+    bl_description = "Import a MagicaVoxel .vox file as an editable Chromoxel carrier. 将 MagicaVoxel .vox 文件导入为可编辑 Chromoxel 载体"
     filename_ext = ".vox"
     filter_glob: StringProperty(default="*.vox", options={"HIDDEN"})
 
@@ -483,6 +484,7 @@ class VOXELIZER_OT_import_vox(Operator, ImportHelper):
 class VOXELIZER_OT_export_vox(Operator, ExportHelper):
     bl_idname = "voxelizer.export_vox"
     bl_label = "Export MagicaVoxel (.vox)"
+    bl_description = "Export the active editable carrier to MagicaVoxel .vox with chunked coordinates. 将活动可编辑载体按分块坐标导出为 MagicaVoxel .vox"
     filename_ext = ".vox"
     filter_glob: StringProperty(default="*.vox", options={"HIDDEN"})
 

@@ -22,6 +22,16 @@ class RecordingLayout:
 
     def __init__(self, events):
         self.events = events
+        self._enabled = True
+
+    @property
+    def enabled(self):
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value):
+        self._enabled = bool(value)
+        self.events.append(("enabled", self._enabled))
 
     def box(self):
         return self
@@ -48,8 +58,11 @@ class RecordingLayout:
         self.events.append(("template_list",))
 
     def operator(self, operator_id, **kwargs):
-        self.events.append(("operator", operator_id, kwargs.get("text", "")))
-        return SimpleNamespace()
+        result = SimpleNamespace()
+        self.events.append(
+            ("operator", operator_id, kwargs.get("text", ""), kwargs.get("icon", ""), result)
+        )
+        return result
 
 
 def draw(language: str):
@@ -74,8 +87,8 @@ def main() -> None:
 
         english_text = [event[-1] for event in english if len(event) >= 2]
         chinese_text = [event[-1] for event in chinese if len(event) >= 2]
-        assert "Quick Start" in english_text
-        assert "快速开始" in chinese_text
+        assert "START HERE" in english_text
+        assert "从这里开始" in chinese_text
         assert "1. Select Source" in english_text
         assert "1. 选择源模型" in chinese_text
         assert "6. Bake Output" in english_text
@@ -91,7 +104,7 @@ def main() -> None:
         bake_mode_index = first_index(
             english,
             lambda event: event[0] == "operator"
-            and event[1] == "wm.context_set_enum"
+            and event[1] == voxelizer.VOXELIZER_OT_set_enum.bl_idname
             and event[2] == "Editable",
         )
         preview_index = first_index(
@@ -109,6 +122,16 @@ def main() -> None:
             lambda event: event[0] == "prop" and event[1] == "show_step_source",
         )
         assert max(language_index, bake_mode_index, preview_index, bake_index) < step_one_index
+
+        preview_event = english[preview_index]
+        bake_event = english[bake_index]
+        assert preview_event[3] == "GEOMETRY_NODES"
+        assert len(voxelizer.VOXELIZER_OT_preview.bl_description.split()) >= 8
+        assert len(voxelizer.VOXELIZER_OT_bake.bl_description.split()) >= 8
+        assert any(
+            event[0] == "label" and event[1] == "Source: Cube"
+            for event in english
+        )
         print("PASS chromoxel_blender_0.9.0_workflow_ui")
     finally:
         voxelizer.unregister()

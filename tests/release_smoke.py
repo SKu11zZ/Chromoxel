@@ -32,4 +32,4 @@ check_close(1.0, 1.0)
 voxelizer.register()
 voxelizer.unregister()
 
-print("PASS chromoxel_blender_0.9.0_release_smoke")
+print("PASS chromoxel_blender_0.9.1_release_smoke")

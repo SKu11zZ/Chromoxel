@@ -23,7 +23,7 @@ from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview,
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 9, 0),
+    "version": (0, 9, 1),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -63,57 +63,81 @@ def _voxel_size_changed(settings, context) -> None:
 class VOXELIZER_PG_settings(PropertyGroup):
     ui_language: EnumProperty(
         name="UI Language",
+        description=(
+            "Choose the language used by Chromoxel labels and action tooltips. "
+            "选择 Chromoxel 标签与操作提示所使用的语言"
+        ),
         items=(
-            ("AUTO", "Auto", "Follow Blender interface language"),
-            ("EN", "English", "Use English Chromoxel labels"),
-            ("ZH", "中文", "使用中文 Chromoxel 标签"),
+            ("AUTO", "Auto", "Follow Blender's interface language. 跟随 Blender 界面语言"),
+            ("EN", "English", "Show Chromoxel in English. 使用英文显示 Chromoxel"),
+            ("ZH", "中文", "Show Chromoxel in Chinese. 使用中文显示 Chromoxel"),
         ),
         default="AUTO",
     )
     source_scope: EnumProperty(
         name="Source Scope",
-        description="Choose which mesh objects Preview and Bake process",
+        description=(
+            "Choose which original mesh objects Preview and Bake process. "
+            "选择预览与烘焙要处理的原始网格对象范围"
+        ),
         items=(
-            ("ACTIVE", "Active", "Process only the active selected mesh"),
-            ("SELECTED", "Selected", "Process every eligible selected mesh"),
-            ("COLLECTION", "Collection", "Process meshes in a collection"),
+            ("ACTIVE", "Active", "Process only the active original mesh. 仅处理活动的原始网格"),
+            ("SELECTED", "Selected", "Process every eligible selected mesh. 处理所有符合条件的已选网格"),
+            ("COLLECTION", "Collection", "Process eligible meshes in one collection. 处理指定集合中的网格"),
         ),
         default="ACTIVE",
     )
     source_collection: PointerProperty(
         name="Source Collection",
+        description=(
+            "Collection whose eligible mesh objects will be processed. "
+            "指定要批量处理其网格对象的集合"
+        ),
         type=bpy.types.Collection,
     )
     include_hidden: BoolProperty(
         name="Include Hidden",
-        description="Include hidden meshes when Collection scope is used",
+        description=(
+            "Include hidden mesh objects when Collection scope is used. "
+            "使用集合范围时也处理隐藏的网格对象"
+        ),
         default=False,
     )
     quality_preset: EnumProperty(
         name="Quality",
+        description=(
+            "Choose a quick voxel-size preset based on source dimensions. "
+            "按源模型尺寸快速设置体素大小"
+        ),
         items=(
-            ("CUSTOM", "Custom", "Voxel Size was entered manually"),
-            ("COARSE", "Coarse", "About 12 cells across the longest source axis"),
-            ("MEDIUM", "Medium", "About 24 cells across the longest source axis"),
-            ("FINE", "Fine", "About 48 cells across the longest source axis"),
+            ("CUSTOM", "Custom", "Voxel Size was entered manually. 体素尺寸由用户手动设置"),
+            ("COARSE", "Coarse", "Use about 12 cells across the longest source axis. 最长轴约使用 12 个体素"),
+            ("MEDIUM", "Medium", "Use about 24 cells across the longest source axis. 最长轴约使用 24 个体素"),
+            ("FINE", "Fine", "Use about 48 cells across the longest source axis. 最长轴约使用 48 个体素"),
         ),
         default="CUSTOM",
         options={"HIDDEN"},
     )
     grid_origin_mode: EnumProperty(
         name="Grid Origin",
-        description="Anchor the voxel lattice for repeatable results",
+        description=(
+            "Anchor the voxel lattice so repeated Bakes keep stable coordinates. "
+            "固定体素网格锚点，使重复烘焙保持稳定坐标"
+        ),
         items=(
-            ("OBJECT", "Object Origin", "Anchor the lattice at local (0, 0, 0)"),
-            ("CUSTOM", "Custom", "Anchor the lattice at a custom local coordinate"),
-            ("BOUNDS", "Legacy Bounds", "Start each non-symmetric axis at its bounds"),
+            ("OBJECT", "Object Origin", "Anchor at local (0, 0, 0) for stable object-relative results. 锚定到对象局部原点"),
+            ("CUSTOM", "Custom", "Anchor at a user-defined local coordinate. 锚定到自定义局部坐标"),
+            ("BOUNDS", "Legacy Bounds", "Start non-symmetric axes at their bounds for legacy files. 使用旧版边界起点"),
         ),
         default="OBJECT",
         update=_geometry_setting_changed,
     )
     grid_origin: FloatVectorProperty(
         name="Custom Origin",
-        description="Local-space grid anchor used in Custom mode",
+        description=(
+            "Local-space lattice anchor used only in Custom origin mode. "
+            "仅在自定义原点模式下使用的局部网格锚点"
+        ),
         size=3,
         subtype="XYZ",
         unit="LENGTH",
@@ -122,12 +146,18 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     live_update: BoolProperty(
         name="Live Update",
-        description="Allow a started live session to follow active-source changes",
+        description=(
+            "Allow a started live session to rebuild after active-source changes. "
+            "允许已启动的实时会话跟随活动源模型变化自动重建"
+        ),
         default=True,
     )
     live_debounce: FloatProperty(
         name="Debounce",
-        description="Wait after the last geometry change before rebuilding",
+        description=(
+            "Wait this long after the last geometry change before rebuilding. "
+            "在最后一次几何变化后等待该时长再重建"
+        ),
         default=0.25,
         min=0.05,
         max=2.0,
@@ -170,8 +200,8 @@ class VOXELIZER_PG_settings(PropertyGroup):
     auto_watertight_copy: BoolProperty(
         name="Auto Watertight Copy",
         description=(
-            "For a non-manifold source, build a private voxel-remeshed copy "
-            "for occupancy while leaving the source untouched"
+            "For a non-manifold source, build a private voxel-remeshed copy for occupancy "
+            "while leaving the source untouched. 对非流形源创建私有闭合副本，不修改原模型"
         ),
         default=True,
         update=_geometry_setting_changed,
@@ -180,7 +210,8 @@ class VOXELIZER_PG_settings(PropertyGroup):
         name="Repair Voxel Size",
         description=(
             "Voxel Remesh resolution for the private watertight copy; smaller "
-            "values preserve finer detail but cost more memory and time"
+            "values preserve finer detail but cost more memory and time. "
+            "私有闭合副本的重网格精度；越小越精细，但耗时和内存更高"
         ),
         default=0.08,
         min=0.005,
@@ -191,7 +222,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     voxel_size: FloatProperty(
         name="Voxel Size",
-        description="Grid cell size in each source object's local space",
+        description=(
+            "Base grid cell size in each source object's local Blender units. "
+            "源对象局部 Blender 单位中的基础体素边长"
+        ),
         default=0.25,
         min=0.001,
         soft_max=10.0,
@@ -201,17 +235,23 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     sampling_mode: EnumProperty(
         name="Detail Mode",
-        description="Use one uniform grid or automatically refine high-error surface cells",
+        description=(
+            "Use one uniform grid or automatically refine texture and geometry detail. "
+            "选择统一网格，或自动细化纹理与几何细节"
+        ),
         items=(
-            ("ADAPTIVE", "Adaptive", "Refine texture boundaries and sharp geometry automatically"),
-            ("UNIFORM", "Uniform", "Use the legacy single-size voxel grid"),
+            ("ADAPTIVE", "Adaptive", "Refine texture boundaries and sharp geometry automatically. 自动细化纹理边界与锐利几何"),
+            ("UNIFORM", "Uniform", "Use one cell size everywhere. 全部区域使用同一体素尺寸"),
         ),
         default="ADAPTIVE",
         update=_geometry_setting_changed,
     )
     adaptive_max_level: IntProperty(
         name="Max Detail Level",
-        description="Maximum power-of-two refinement depth; 2 means base, half, and quarter size",
+        description=(
+            "Maximum power-of-two refinement depth; 2 means base, half, and quarter size. "
+            "最大二分细化深度；2 表示基础、二分之一和四分之一尺寸"
+        ),
         default=2,
         min=0,
         max=4,
@@ -219,7 +259,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     adaptive_texture_threshold: FloatProperty(
         name="Texture Error",
-        description="Minimum colour range inside a voxel before it is refined",
+        description=(
+            "Minimum colour range inside a voxel before texture refinement starts. "
+            "体素内部颜色变化达到该值时开始纹理细化"
+        ),
         default=0.16,
         min=0.01,
         max=1.0,
@@ -228,7 +271,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     adaptive_geometry_angle: FloatProperty(
         name="Geometry Angle",
-        description="Minimum nearby edge angle in degrees before a voxel is refined",
+        description=(
+            "Minimum nearby edge angle in degrees before geometry refinement starts. "
+            "附近边夹角达到该角度时开始几何细化"
+        ),
         default=35.0,
         min=1.0,
         max=180.0,
@@ -237,7 +283,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     adaptive_geometry_max_level: IntProperty(
         name="Geometry Detail Level",
-        description="Maximum refinement depth used only for sharp geometry edges",
+        description=(
+            "Maximum refinement depth used only near sharp geometry edges. "
+            "仅针对锐利几何边缘使用的最大细化深度"
+        ),
         default=1,
         min=0,
         max=4,
@@ -245,7 +294,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     cube_gap: FloatProperty(
         name="Cube Gap",
-        description="Empty distance between neighbouring cube faces",
+        description=(
+            "Visual empty distance between neighbouring Preview or cube faces. "
+            "相邻预览体素或实体方块表面之间的可视间隙"
+        ),
         default=0.025,
         min=0.0,
         soft_max=1.0,
@@ -255,46 +307,64 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     uv_map: StringProperty(
         name="UV Map",
-        description="UV layer used to sample BaseColor Image",
+        description=(
+            "UV layer used to sample the Base Color image; leave empty for the active layer. "
+            "用于采样基础颜色贴图的 UV 层；留空时使用活动 UV"
+        ),
         default="",
         update=_geometry_setting_changed,
     )
     base_color_image: PointerProperty(
         name="BaseColor Image",
-        description="Image sampled through the selected UV map",
+        description=(
+            "Optional image that overrides images discovered in material nodes. "
+            "可选的覆盖贴图；设置后优先于材质节点中自动发现的贴图"
+        ),
         type=bpy.types.Image,
         update=_geometry_setting_changed,
     )
     auto_material_images: BoolProperty(
         name="Auto Material Images",
-        description="When no override image is selected, find Base Color images from material nodes",
+        description=(
+            "When no override is selected, find Base Color images from material nodes. "
+            "未设置覆盖贴图时，从材质节点自动查找基础颜色贴图"
+        ),
         default=True,
         update=_geometry_setting_changed,
     )
     texture_filter: EnumProperty(
         name="Texture Filter",
-        description="How UV image samples are reconstructed",
+        description=(
+            "Choose how colours between texture pixels are reconstructed. "
+            "选择纹理像素之间的颜色重建方式"
+        ),
         items=(
-            ("BILINEAR", "Bilinear", "Filtered sampling for stable texture boundaries"),
-            ("NEAREST", "Nearest", "Legacy point sampling for pixel-art sources"),
+            ("BILINEAR", "Bilinear", "Filter neighbouring pixels for stable texture boundaries. 混合邻近像素以获得稳定纹理边界"),
+            ("NEAREST", "Nearest", "Read the nearest pixel for pixel-art sources. 读取最近像素，适合像素风素材"),
         ),
         default="BILINEAR",
         update=_geometry_setting_changed,
     )
     compute_backend: EnumProperty(
         name="Compute Backend",
-        description="Choose CPU sampling or GPU batch texture sampling with automatic fallback",
+        description=(
+            "Choose the compute backend; unavailable or oversized GPU work falls back safely. "
+            "选择计算后端；GPU 不可用或超出限制时会安全回退"
+        ),
         items=(
-            ("AUTO", "Auto", "Use GPU when an interactive compute context is available"),
-            ("GPU", "GPU", "Request GPU batch sampling and fall back safely when unavailable"),
-            ("CPU", "CPU", "Use the deterministic CPU sampling path"),
+            ("AUTO", "Auto", "Use GPU when available and fall back to CPU automatically. 可用时使用 GPU，否则自动回退 CPU"),
+            ("GPU", "GPU", "Request GPU acceleration and report any safe fallback. 请求 GPU 加速，并报告安全回退原因"),
+            ("CPU", "CPU", "Always use the deterministic CPU path. 始终使用确定性的 CPU 路径"),
         ),
         default="AUTO",
         update=_geometry_setting_changed,
     )
     gpu_batch_size: IntProperty(
         name="GPU Batch Size",
-        description="Maximum UV samples submitted per bounded GPU dispatch",
+        description=(
+            "Maximum samples submitted in one bounded GPU dispatch. "
+            "单次有界 GPU 调度提交的最大采样数量"
+        ),
         default=65_536,
         min=1_024,
         max=1_000_000,
@@ -305,7 +375,8 @@ class VOXELIZER_PG_settings(PropertyGroup):
         name="GPU Memory Limit (MiB)",
         description=(
             "Upper bound for cached source textures and temporary UV/colour "
-            "buffers; oversized jobs fall back to CPU"
+            "buffers; oversized jobs fall back to CPU. "
+            "缓存源贴图和临时缓冲的显存上限；超出后回退 CPU"
         ),
         default=512,
         min=64,
@@ -315,7 +386,10 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     fallback_color: FloatVectorProperty(
         name="Fallback Color",
-        description="Colour used when no valid image/UV sample is available",
+        description=(
+            "Colour used when no valid material image or UV sample is available. "
+            "没有有效材质贴图或 UV 样本时使用的备用颜色"
+        ),
         subtype="COLOR",
         size=4,
         min=0.0,
@@ -325,33 +399,68 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     color_mode: EnumProperty(
         name="Edit Color Mode",
+        description=(
+            "Store unrestricted voxel colours or link voxels to editable palette slots. "
+            "选择直接保存体素颜色，或让体素引用可编辑调色板"
+        ),
         items=(
-            ("DIRECT", "Direct Color", "Store unrestricted per-voxel colours"),
-            ("PALETTE", "Palette", "Reference editable palette/material slots"),
+            ("DIRECT", "Direct Color", "Store unrestricted colour and PBR values per voxel. 每个体素独立保存颜色和 PBR 参数"),
+            ("PALETTE", "Palette", "Reference shared editable palette and material slots. 引用共享的可编辑调色板与材质槽"),
         ),
         default="DIRECT",
     )
     edit_color: FloatVectorProperty(
         name="Edit Color",
+        description=(
+            "Colour applied by Add, Paint, Paste, and Fill editing actions. "
+            "添加、上色、粘贴与填充操作所使用的颜色"
+        ),
         subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
         default=(0.18, 0.48, 0.8, 1.0),
     )
-    edit_material_id: IntProperty(name="Material ID", default=0, min=0)
-    edit_roughness: FloatProperty(name="Roughness", default=0.5, min=0.0, max=1.0)
-    edit_metallic: FloatProperty(name="Metallic", default=0.0, min=0.0, max=1.0)
-    edit_emission: FloatProperty(name="Emission", default=0.0, min=0.0, soft_max=25.0)
+    edit_material_id: IntProperty(
+        name="Material ID",
+        description="Material identifier written to edited voxels. 写入已编辑体素的材质标识",
+        default=0,
+        min=0,
+    )
+    edit_roughness: FloatProperty(
+        name="Roughness",
+        description="Surface roughness written to edited voxels. 写入已编辑体素的表面粗糙度",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+    )
+    edit_metallic: FloatProperty(
+        name="Metallic",
+        description="Metallic value written to edited voxels. 写入已编辑体素的金属度",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    edit_emission: FloatProperty(
+        name="Emission",
+        description="Emission strength written to edited voxels. 写入已编辑体素的自发光强度",
+        default=0.0,
+        min=0.0,
+        soft_max=25.0,
+    )
     palette_slots: CollectionProperty(type=editor.VOXELIZER_PG_palette_slot)
     palette_active_index: IntProperty(name="Palette Slot", default=0, min=0, max=254)
     bake_mode: EnumProperty(
         name="Bake Output",
+        description=(
+            "Choose the object or mesh representation produced by Start Bake. "
+            "选择开始烘焙后生成的对象或网格形式"
+        ),
         items=(
-            ("EDITABLE", "Editable Points", "Duplicate the editable point carrier"),
-            ("REALIZED", "Realized Cubes", "Build one independent cube per voxel"),
-            ("SURFACE", "Surface Mesh", "Remove hidden faces between atomic voxels"),
-            ("GREEDY", "Greedy Mesh", "Merge compatible coplanar voxel faces"),
+            ("EDITABLE", "Editable Points", "Keep a compact editable point carrier with instanced cubes. 保留带实例方块的紧凑可编辑点载体"),
+            ("REALIZED", "Realized Cubes", "Build one independent cube mesh island per voxel. 每个体素生成独立立方体网格岛"),
+            ("SURFACE", "Surface Mesh", "Remove invisible shared faces while preserving the voxel shell. 删除不可见共享面并保留体素外壳"),
+            ("GREEDY", "Greedy Mesh", "Merge compatible coplanar faces for the smallest static mesh. 合并兼容共面面片以获得更紧凑的静态网格"),
         ),
         default="REALIZED",
     )
@@ -359,13 +468,17 @@ class VOXELIZER_PG_settings(PropertyGroup):
         name="Remove Enclosed Voxels",
         description=(
             "Delete voxels whose six axis-aligned sides are completely covered; "
-            "exterior silhouettes, thin parts, holes, colours, and UV data are preserved"
+            "exterior silhouettes, thin parts, holes, colours, and UV data are preserved. "
+            "删除六面完全被覆盖的内部体素，同时保留外轮廓、薄片、孔洞、颜色和 UV"
         ),
         default=False,
     )
     vox_import_size: FloatProperty(
         name="VOX Unit Size",
-        description="Blender-unit size assigned to one imported VOX cell",
+        description=(
+            "Blender-unit size assigned to one imported MagicaVoxel cell. "
+            "导入 MagicaVoxel 时每个体素对应的 Blender 单位尺寸"
+        ),
         default=0.1,
         min=0.0001,
         soft_max=10.0,
@@ -374,13 +487,19 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     use_sparse_candidates: BoolProperty(
         name="Sparse Surface Candidates",
-        description="Use sparse triangle candidates once the grid reaches the threshold",
+        description=(
+            "Generate candidates around source triangles for large grids instead of scanning every cell. "
+            "大网格只在源三角形附近生成候选，避免扫描全部单元"
+        ),
         default=True,
         update=_geometry_setting_changed,
     )
     sparse_grid_threshold: IntProperty(
         name="Sparse Grid Threshold",
-        description="Use sparse candidates at or above this full-grid cell count",
+        description=(
+            "Switch to sparse candidate generation at or above this full-grid count. "
+            "完整网格单元数达到该值时切换为稀疏候选生成"
+        ),
         default=50_000,
         min=0,
         max=100_000_000,
@@ -388,49 +507,100 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
     sample_budget: IntProperty(
         name="Candidate Limit",
-        description="Maximum candidate cells processed for one source",
+        description=(
+            "Safety limit for candidate cells processed for one source object. "
+            "单个源对象允许处理的候选单元安全上限"
+        ),
         default=1_500_000,
         min=1_000,
         max=100_000_000,
     )
     candidate_expansion_budget: IntProperty(
         name="Expansion Limit",
-        description="Maximum triangle-to-grid candidate expansion work per source",
+        description=(
+            "Safety limit for triangle-to-grid candidate expansion work per source. "
+            "单个源对象从三角形展开到网格候选的工作量上限"
+        ),
         default=48_000_000,
         min=1_000,
         max=1_000_000_000,
     )
     voxel_budget: IntProperty(
         name="Voxel Limit",
-        description="Maximum editable surface voxels produced for one source model",
+        description=(
+            "Maximum editable surface voxels produced for one source model. "
+            "单个源模型允许生成的可编辑表面体素上限"
+        ),
         default=100_000,
         min=1_000,
         max=100_000,
     )
     sampling_chunk_size: IntProperty(
         name="Task Chunk",
-        description="Work units between progress and cancellation checks",
+        description=(
+            "Work units between progress updates and cancellation checks. "
+            "两次进度更新与取消检查之间的工作单元数量"
+        ),
         default=4096,
         min=128,
         max=65_536,
     )
     cache_memory_mb: IntProperty(
         name="Cache Memory",
-        description="Maximum in-memory sampling cache size in MiB",
+        description=(
+            "Maximum CPU memory reserved for reusable sampling results. "
+            "可复用采样结果允许占用的最大 CPU 内存"
+        ),
         default=128,
         min=16,
         max=4096,
         subtype="UNSIGNED",
     )
-    show_step_source: BoolProperty(name="1. Source", default=True)
-    show_step_grid: BoolProperty(name="2. Voxel Grid", default=True)
-    show_step_surface: BoolProperty(name="3. Surface Input", default=True)
-    show_step_colour: BoolProperty(name="4. Colour", default=True)
-    show_step_preview: BoolProperty(name="5. Preview", default=True)
-    show_step_bake: BoolProperty(name="6. Bake", default=True)
-    show_step_edit: BoolProperty(name="7. Edit & Export", default=False)
-    show_step_live: BoolProperty(name="8. Live Preview", default=False)
-    show_advanced: BoolProperty(name="Advanced", default=False)
+    show_step_source: BoolProperty(
+        name="1. Source",
+        description="Expand or collapse source-selection controls. 展开或折叠源模型选择控件",
+        default=True,
+    )
+    show_step_grid: BoolProperty(
+        name="2. Voxel Grid",
+        description="Expand or collapse voxel-grid controls. 展开或折叠体素网格控件",
+        default=True,
+    )
+    show_step_surface: BoolProperty(
+        name="3. Surface Input",
+        description="Expand or collapse surface validation and repair controls. 展开或折叠表面检查与修复控件",
+        default=True,
+    )
+    show_step_colour: BoolProperty(
+        name="4. Colour",
+        description="Expand or collapse texture and colour controls. 展开或折叠纹理与颜色控件",
+        default=True,
+    )
+    show_step_preview: BoolProperty(
+        name="5. Preview",
+        description="Expand or collapse editable Preview controls. 展开或折叠可编辑预览控件",
+        default=True,
+    )
+    show_step_bake: BoolProperty(
+        name="6. Bake",
+        description="Expand or collapse final Bake controls. 展开或折叠最终烘焙控件",
+        default=True,
+    )
+    show_step_edit: BoolProperty(
+        name="7. Edit & Export",
+        description="Expand or collapse voxel editing and export tools. 展开或折叠体素编辑与导出工具",
+        default=False,
+    )
+    show_step_live: BoolProperty(
+        name="8. Live Preview",
+        description="Expand or collapse live-rebuild controls. 展开或折叠实时重建控件",
+        default=False,
+    )
+    show_advanced: BoolProperty(
+        name="Advanced",
+        description="Expand or collapse performance and safety limits. 展开或折叠性能与安全限制",
+        default=False,
+    )
     estimate_summary: StringProperty(
         name="Estimate",
         default="Run Estimate before a fine bake",
@@ -536,19 +706,79 @@ class VOXELIZER_PG_settings(PropertyGroup):
     )
 
 
+class VOXELIZER_OT_set_enum(Operator):
+    """Set one Chromoxel settings enum while exposing a per-button tooltip."""
+
+    bl_idname = "voxelizer.set_enum"
+    bl_label = "Set Chromoxel Option"
+    bl_description = "Choose this Chromoxel option. 选择此 Chromoxel 选项"
+    bl_options = {"INTERNAL"}
+
+    property_name: StringProperty(options={"HIDDEN"})
+    value: StringProperty(options={"HIDDEN"})
+    tooltip: StringProperty(options={"HIDDEN"})
+
+    @classmethod
+    def description(cls, _context, properties):
+        return str(getattr(properties, "tooltip", "") or cls.bl_description)
+
+    def execute(self, context):
+        settings = context.scene.voxelizer_settings
+        prop = settings.bl_rna.properties.get(self.property_name)
+        if prop is None or prop.type != "ENUM":
+            self.report({"ERROR"}, f"Unknown Chromoxel enum: {self.property_name}")
+            return {"CANCELLED"}
+        setattr(settings, self.property_name, self.value)
+        return {"FINISHED"}
+
+
 class VOXELIZER_OT_quality_preset(Operator):
     bl_idname = "voxelizer.quality_preset"
     bl_label = "Apply Quality Preset"
-    bl_description = "Set Voxel Size from the longest source dimension"
+    bl_description = "Set Voxel Size from the longest source dimension. 按源模型最长轴快速设置体素尺寸"
     bl_options = {"REGISTER", "UNDO"}
 
     preset: EnumProperty(
         items=(
-            ("COARSE", "Coarse", "About 12 cells across"),
-            ("MEDIUM", "Medium", "About 24 cells across"),
-            ("FINE", "Fine", "About 48 cells across"),
+            (
+                "COARSE",
+                "Coarse",
+                "Use about 12 cells across the source's longest axis. "
+                "源模型最长轴约使用 12 个体素。",
+            ),
+            (
+                "MEDIUM",
+                "Medium",
+                "Use about 24 cells across the source's longest axis. "
+                "源模型最长轴约使用 24 个体素。",
+            ),
+            (
+                "FINE",
+                "Fine",
+                "Use about 48 cells across the source's longest axis. "
+                "源模型最长轴约使用 48 个体素。",
+            ),
         )
     )
+
+    @classmethod
+    def description(cls, context, properties):
+        descriptions = {
+            "COARSE": (
+                "Set a fast coarse grid with about 12 cells across the longest axis.",
+                "设置快速粗略网格，最长轴约划分为 12 个体素。",
+            ),
+            "MEDIUM": (
+                "Set a balanced grid with about 24 cells across the longest axis.",
+                "设置均衡网格，最长轴约划分为 24 个体素。",
+            ),
+            "FINE": (
+                "Set a detailed grid with about 48 cells across the longest axis.",
+                "设置精细网格，最长轴约划分为 48 个体素。",
+            ),
+        }
+        value = descriptions.get(str(getattr(properties, "preset", "")))
+        return editor.translated(context, *value) if value else cls.bl_description
 
     def execute(self, context):
         settings = context.scene.voxelizer_settings
@@ -582,7 +812,7 @@ class VOXELIZER_OT_quality_preset(Operator):
 class VOXELIZER_OT_estimate(Operator):
     bl_idname = "voxelizer.estimate"
     bl_label = "Estimate Work"
-    bl_description = "Estimate candidate work and transient cache memory"
+    bl_description = "Estimate candidate work and temporary memory without creating output. 仅估算候选工作量与临时内存，不生成输出"
 
     def execute(self, context):
         settings = context.scene.voxelizer_settings
@@ -621,7 +851,7 @@ class VOXELIZER_OT_check_surface(Operator):
 
     bl_idname = "voxelizer.check_surface"
     bl_label = "Check Surface"
-    bl_description = "Explicitly inspect the active mesh for boundaries and components"
+    bl_description = "Explicitly inspect the active mesh for open boundaries and components. 显式检查活动网格的开放边界与连通块"
 
     @classmethod
     def poll(cls, context):
@@ -832,7 +1062,7 @@ class _VOXELIZER_OT_modal_job:
 class VOXELIZER_OT_preview(_VOXELIZER_OT_modal_job, Operator):
     bl_idname = "voxelizer.preview"
     bl_label = "Add / Update Chromoxel"
-    bl_description = "Create or update non-destructive Geometry Nodes previews"
+    bl_description = "Create or update a non-destructive editable Geometry Nodes Preview. 创建或更新非破坏、可编辑的 Geometry Nodes 预览"
     bl_options = {"REGISTER", "UNDO"}
 
     def _job_iter(self, context):
@@ -867,7 +1097,7 @@ class VOXELIZER_OT_preview(_VOXELIZER_OT_modal_job, Operator):
 class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
     bl_idname = "voxelizer.bake"
     bl_label = "Bake to Mesh"
-    bl_description = "Create realized <Source>_VOX meshes with retained colours"
+    bl_description = "Create the chosen final output while preserving sampled colours and attributes. 生成所选最终输出，并保留采样颜色与属性"
     bl_options = {"REGISTER", "UNDO"}
 
     def _job_iter(self, context):
@@ -1026,7 +1256,7 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
 class VOXELIZER_OT_cancel_job(Operator):
     bl_idname = "voxelizer.cancel_job"
     bl_label = "Cancel Chromoxel Task"
-    bl_description = "Request cancellation at the next bounded work chunk"
+    bl_description = "Request safe cancellation at the next bounded work chunk. 在下一个有界工作分块安全取消任务"
 
     @classmethod
     def poll(cls, context):
@@ -1041,7 +1271,7 @@ class VOXELIZER_OT_cancel_job(Operator):
 class VOXELIZER_OT_clear_cache(Operator):
     bl_idname = "voxelizer.clear_cache"
     bl_label = "Clear Sampling Cache"
-    bl_description = "Free cached voxel centres and colours without deleting outputs"
+    bl_description = "Free prepared source and sampling caches without deleting outputs. 释放源准备与采样缓存，但不删除输出"
 
     def execute(self, _context):
         stats = core.sampling_cache_stats()
@@ -1056,7 +1286,7 @@ class VOXELIZER_OT_clear_cache(Operator):
 class VOXELIZER_OT_clear(Operator):
     bl_idname = "voxelizer.clear"
     bl_label = "Clear Outputs"
-    bl_description = "Delete only objects tagged as Chromoxel outputs"
+    bl_description = "Delete only objects tagged as Chromoxel outputs; source meshes remain untouched. 仅删除 Chromoxel 输出，源模型保持不变"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -1075,7 +1305,7 @@ class VOXELIZER_OT_clear(Operator):
 class VOXELIZER_OT_live_toggle(Operator):
     bl_idname = "voxelizer.live_toggle"
     bl_label = "Start / Stop Live"
-    bl_description = "Start watching the active source, or stop the live session"
+    bl_description = "Start watching the active source for changes, or stop the live session. 启动活动源变化监听，或停止实时会话"
 
     def execute(self, context):
         settings = context.scene.voxelizer_settings
@@ -1113,16 +1343,67 @@ class VOXELIZER_PT_panel(Panel):
         source = context.active_object
         tr = lambda english, chinese: editor.translated(context, english, chinese)
 
+        button_tooltips = {
+            "bake_mode": {
+                "EDITABLE": (
+                    "Keep a compact editable point carrier with instanced cubes.",
+                    "保留带实例方块的紧凑可编辑点载体。",
+                ),
+                "REALIZED": (
+                    "Build one independent cube mesh island per voxel.",
+                    "每个体素生成一个独立立方体网格岛。",
+                ),
+                "SURFACE": (
+                    "Remove invisible shared faces while preserving the voxel shell.",
+                    "删除不可见共享面，同时保留体素外壳。",
+                ),
+                "GREEDY": (
+                    "Merge compatible coplanar faces for a compact static mesh.",
+                    "合并兼容共面面片，得到紧凑的静态网格。",
+                ),
+            },
+            "source_scope": {
+                "ACTIVE": ("Process only the active original mesh.", "仅处理活动的原始网格。"),
+                "SELECTED": ("Process every eligible selected mesh.", "处理所有符合条件的已选网格。"),
+                "COLLECTION": ("Process eligible meshes in one collection.", "处理指定集合中符合条件的网格。"),
+            },
+            "sampling_mode": {
+                "UNIFORM": ("Use one voxel size across the whole source.", "整个源模型使用同一体素尺寸。"),
+                "ADAPTIVE": ("Refine texture boundaries and sharp geometry automatically.", "自动细化纹理边界与锐利几何。"),
+            },
+            "grid_origin_mode": {
+                "OBJECT": ("Anchor the grid at the object's local origin.", "将网格锚定到对象局部原点。"),
+                "CUSTOM": ("Anchor the grid at a custom local coordinate.", "将网格锚定到自定义局部坐标。"),
+                "BOUNDS": ("Use the legacy bounds-aligned grid origin.", "使用旧版边界对齐网格原点。"),
+            },
+            "texture_filter": {
+                "BILINEAR": ("Blend neighbouring pixels for stable texture boundaries.", "混合邻近像素以获得稳定纹理边界。"),
+                "NEAREST": ("Read the nearest pixel for pixel-art sources.", "读取最近像素，适合像素风素材。"),
+            },
+            "color_mode": {
+                "DIRECT": ("Store independent colour and PBR values per voxel.", "每个体素独立保存颜色和 PBR 参数。"),
+                "PALETTE": ("Link voxels to shared editable palette slots.", "让体素引用共享的可编辑调色板槽。"),
+            },
+            "compute_backend": {
+                "AUTO": ("Use GPU when available and fall back to CPU safely.", "可用时使用 GPU，否则安全回退 CPU。"),
+                "GPU": ("Request GPU acceleration and report fallback reasons.", "请求 GPU 加速，并报告回退原因。"),
+                "CPU": ("Always use the deterministic CPU path.", "始终使用确定性的 CPU 路径。"),
+            },
+        }
+
         def enum_buttons(owner, property_name, choices):
             row = owner.row(align=True)
             for value, english, chinese in choices:
                 operator = row.operator(
-                    "wm.context_set_enum",
+                    VOXELIZER_OT_set_enum.bl_idname,
                     text=tr(english, chinese),
                     depress=getattr(settings, property_name) == value,
                 )
-                operator.data_path = f"scene.voxelizer_settings.{property_name}"
+                operator.property_name = property_name
                 operator.value = value
+                tooltip = button_tooltips.get(property_name, {}).get(value)
+                if tooltip is not None:
+                    operator.tooltip = tr(*tooltip)
 
         def step_box(property_name, english, chinese, icon):
             box = layout.box()
@@ -1135,11 +1416,62 @@ class VOXELIZER_PT_panel(Panel):
             )
             return box if getattr(settings, property_name) else None
 
-        # Always keep language, output mode, and the two primary actions above
-        # the numbered workflow. No source inspection is performed here.
+        # Keep the complete start path permanently visible. This block is not
+        # collapsible and performs no mesh/topology inspection while drawing.
         quick_box = layout.box()
-        quick_box.label(text=tr("Quick Start", "快速开始"), icon="PLAY")
+        title_row = quick_box.row()
+        title_row.scale_y = 1.1
+        title_row.label(text=tr("START HERE", "从这里开始"), icon="TOOL_SETTINGS")
         quick_box.prop(settings, "ui_language", text=tr("Language", "语言"))
+
+        valid_mesh_source = (
+            source is not None
+            and source.type == "MESH"
+            and not core.is_tool_output(source)
+        )
+        selected_mesh_sources = tuple(
+            obj for obj in context.selected_objects
+            if obj.type == "MESH" and not core.is_tool_output(obj)
+        )
+        source_ready = valid_mesh_source
+        if settings.source_scope == "SELECTED":
+            source_ready = bool(selected_mesh_sources)
+        elif settings.source_scope == "COLLECTION":
+            source_ready = settings.source_collection is not None
+
+        editable_source_ready = editable.is_editable(source)
+        if source_ready:
+            if settings.source_scope == "ACTIVE":
+                source_text = tr(f"Source: {source.name}", f"源模型：{source.name}")
+            elif settings.source_scope == "SELECTED":
+                source_text = tr(
+                    f"Sources: {len(selected_mesh_sources)} selected Mesh objects",
+                    f"源模型：{len(selected_mesh_sources)} 个已选 Mesh 对象",
+                )
+            else:
+                source_text = tr(
+                    f"Collection: {settings.source_collection.name}",
+                    f"集合：{settings.source_collection.name}",
+                )
+            quick_box.label(text=source_text, icon="CHECKMARK")
+        elif editable_source_ready:
+            quick_box.label(
+                text=tr(
+                    f"Editable Preview: {source.name}",
+                    f"可编辑预览：{source.name}",
+                ),
+                icon="CHECKMARK",
+            )
+        else:
+            quick_box.label(
+                text=tr("First select an original Mesh object", "请先选择一个原始 Mesh 对象"),
+                icon="ERROR",
+            )
+            quick_box.label(
+                text=tr("Then choose Preview or Bake below", "然后点击下方的创建预览或开始烘焙"),
+                icon="INFO",
+            )
+
         quick_box.label(text=tr("Bake Output", "烘焙输出"), icon="MESH_CUBE")
         enum_buttons(quick_box, "bake_mode", (
             ("EDITABLE", "Editable", "可编辑点"),
@@ -1147,17 +1479,22 @@ class VOXELIZER_PT_panel(Panel):
             ("SURFACE", "Surface", "表面网格"),
             ("GREEDY", "Greedy", "贪心网格"),
         ))
-        quick_actions = quick_box.row(align=True)
-        quick_actions.enabled = not settings.task_running
-        quick_actions.scale_y = 1.35
-        quick_actions.operator(
+        preview_actions = quick_box.column(align=True)
+        preview_actions.scale_y = 1.35
+        preview_actions.enabled = not settings.task_running and source_ready
+        preview_actions.operator(
             VOXELIZER_OT_preview.bl_idname,
-            text=tr("Create Preview", "创建预览"),
-            icon="MOD_NODES",
+            text=tr("CREATE PREVIEW", "创建预览"),
+            icon="GEOMETRY_NODES",
         )
-        quick_actions.operator(
+        bake_actions = quick_box.column(align=True)
+        bake_actions.scale_y = 1.35
+        bake_actions.enabled = not settings.task_running and (
+            source_ready or editable_source_ready
+        )
+        bake_actions.operator(
             VOXELIZER_OT_bake.bl_idname,
-            text=tr("Start Bake", "开始烘焙"),
+            text=tr("START BAKE", "开始烘焙"),
             icon="MESH_CUBE",
         )
 
@@ -1204,10 +1541,18 @@ class VOXELIZER_PT_panel(Panel):
                 )
             source_box.label(
                 text=tr(
-                    "Select the original Mesh object(s) to process.",
-                    "选择要处理的原始 Mesh 对象。",
+                    (
+                        "Source selection is ready."
+                        if source_ready
+                        else "Select an original Mesh, then return here."
+                    ),
+                    (
+                        "源模型选择已就绪。"
+                        if source_ready
+                        else "请选择一个原始 Mesh，然后返回此处。"
+                    ),
                 ),
-                icon="INFO",
+                icon="CHECKMARK" if source_ready else "ERROR",
             )
 
         quality_box = step_box(
@@ -1367,15 +1712,15 @@ class VOXELIZER_PT_panel(Panel):
             )
 
         preview_box = step_box(
-            "show_step_preview", "5. Create Preview", "5. 创建预览", "MOD_NODES"
+            "show_step_preview", "5. Create Preview", "5. 创建预览", "GEOMETRY_NODES"
         )
         if preview_box is not None:
             preview_actions = preview_box.column(align=True)
-            preview_actions.enabled = not settings.task_running
-            preview_actions.operator(
+            preview_actions.enabled = not settings.task_running and source_ready
+            preview_action = preview_actions.operator(
                 VOXELIZER_OT_preview.bl_idname,
                 text=tr("Create / Update Preview", "创建 / 更新预览"),
-                icon="MOD_NODES",
+                icon="GEOMETRY_NODES",
             )
             preview_box.label(
                 text=tr(
@@ -1401,8 +1746,10 @@ class VOXELIZER_PT_panel(Panel):
                 text=tr("Remove Enclosed Voxels", "移除封闭内部体素"),
             )
             bake_actions = bake_box.column(align=True)
-            bake_actions.enabled = not settings.task_running
-            bake_actions.operator(
+            bake_actions.enabled = not settings.task_running and (
+                source_ready or editable.is_editable(source)
+            )
+            bake_action = bake_actions.operator(
                 VOXELIZER_OT_bake.bl_idname,
                 text=tr("Start Bake", "开始烘焙"),
                 icon="MESH_CUBE",
@@ -1476,7 +1823,7 @@ class VOXELIZER_PT_panel(Panel):
                 voxel_edit_box.operator(
                     editor.VOXELIZER_OT_box_select.bl_idname,
                     text=tr("Box Select", "框选"),
-                    icon="BORDER_RECT",
+                    icon="SELECT_SET",
                 )
                 row = voxel_edit_box.row(align=True)
                 row.operator(
@@ -1758,6 +2105,7 @@ class VOXELIZER_PT_panel(Panel):
 CLASSES = (
     editor.VOXELIZER_PG_palette_slot,
     VOXELIZER_PG_settings,
+    VOXELIZER_OT_set_enum,
     VOXELIZER_OT_quality_preset,
     VOXELIZER_OT_estimate,
     VOXELIZER_OT_check_surface,

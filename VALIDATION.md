@@ -1,5 +1,22 @@
 # Validation Record / 验证记录
 
+## Chromoxel 0.9.1 — Blender 5.1.2 PASS
+
+Date / 日期：2026-08-12
+
+### N-panel entry point and hover help / N 面板入口与悬浮说明
+
+- Replaced the invalid Blender 5.1 `MOD_NODES` and `BORDER_RECT` icons with
+  supported icons. A source-level regression now checks every literal panel
+  icon against Blender 5.1 RNA, so one bad icon cannot silently truncate UI.
+- Empty selection, original Mesh selection, English, Chinese, disabled action
+  state, action order, enum-button tooltip, choice-specific operator tooltip,
+  and property/operator description coverage pass without topology traversal.
+- 修复 Blender 5.1 不支持的 `MOD_NODES` 与 `BORDER_RECT` 图标，并新增源码级回归：将面板中
+  每一个图标与 Blender 5.1 RNA 对照，避免单个错误图标再次静默截断后续 UI。
+- 空选择、原始 Mesh 选择、中英文、禁用状态、操作顺序、枚举按钮说明、选项专属操作说明以及
+  属性/操作器说明均已通过回归，绘制期间不会遍历模型拓扑。
+
 ## Chromoxel 0.9.0 — Blender 5.1.2 PASS
 
 Date / 日期：2026-08-12

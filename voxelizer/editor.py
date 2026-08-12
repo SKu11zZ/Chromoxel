@@ -32,18 +32,41 @@ def translated(context, english: str, chinese: str) -> str:
 
 
 class VOXELIZER_PG_palette_slot(PropertyGroup):
-    name: StringProperty(name="Name", default="Material")
+    name: StringProperty(
+        name="Name",
+        description="Human-readable name for this shared palette slot. 共享调色板槽的可读名称",
+        default="Material",
+    )
     color: FloatVectorProperty(
         name="Base Color",
+        description="Base colour shared by voxels linked to this slot. 此槽关联体素共享的基础颜色",
         subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
         default=(0.18, 0.48, 0.8, 1.0),
     )
-    roughness: FloatProperty(name="Roughness", default=0.5, min=0.0, max=1.0)
-    metallic: FloatProperty(name="Metallic", default=0.0, min=0.0, max=1.0)
-    emission: FloatProperty(name="Emission", default=0.0, min=0.0, soft_max=25.0)
+    roughness: FloatProperty(
+        name="Roughness",
+        description="Roughness shared by voxels linked to this slot. 此槽关联体素共享的粗糙度",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+    )
+    metallic: FloatProperty(
+        name="Metallic",
+        description="Metallic value shared by voxels linked to this slot. 此槽关联体素共享的金属度",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    emission: FloatProperty(
+        name="Emission",
+        description="Emission strength shared by voxels linked to this slot. 此槽关联体素共享的自发光强度",
+        default=0.0,
+        min=0.0,
+        soft_max=25.0,
+    )
 
 
 def active_editable(context) -> bpy.types.Object:
@@ -113,7 +136,7 @@ class _EditableOperator:
 class VOXELIZER_OT_enter_edit(_EditableOperator, Operator):
     bl_idname = "voxelizer.enter_voxel_edit"
     bl_label = "Enter Voxel Edit"
-    bl_description = "Edit Preview carrier points while cubes remain instanced"
+    bl_description = "Edit Preview carrier points while cubes remain instanced. 在方块保持实例化的同时编辑预览载体点"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -132,6 +155,7 @@ class VOXELIZER_OT_enter_edit(_EditableOperator, Operator):
 class VOXELIZER_OT_exit_edit(_EditableOperator, Operator):
     bl_idname = "voxelizer.exit_voxel_edit"
     bl_label = "Exit Voxel Edit"
+    bl_description = "Return the editable voxel carrier to Object Mode. 将可编辑体素载体返回对象模式"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -147,7 +171,7 @@ class VOXELIZER_OT_exit_edit(_EditableOperator, Operator):
 class VOXELIZER_OT_revoxelize_edits(_EditableOperator, Operator):
     bl_idname = "voxelizer.revoxelize_edits"
     bl_label = "Re-voxelize + Replay Edits"
-    bl_description = "Rebuild from the linked source and replay the integer-coordinate edit layer"
+    bl_description = "Rebuild from the linked source and replay the integer-coordinate edit layer. 从关联源模型重建，并按整数坐标精确重放编辑层"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -184,16 +208,27 @@ class VOXELIZER_OT_revoxelize_edits(_EditableOperator, Operator):
 class VOXELIZER_OT_select(_EditableOperator, Operator):
     bl_idname = "voxelizer.voxel_select"
     bl_label = "Voxel Selection"
+    bl_description = "Select, deselect, or invert all editable voxel points. 全选、取消或反选所有可编辑体素点"
     bl_options = {"REGISTER", "UNDO"}
 
     action: EnumProperty(
         items=(
-            ("ALL", "All", "Select every voxel"),
-            ("NONE", "None", "Deselect every voxel"),
-            ("INVERT", "Invert", "Invert voxel selection"),
+            ("ALL", "All", "Select every voxel. 选择全部体素"),
+            ("NONE", "None", "Deselect every voxel. 取消选择全部体素"),
+            ("INVERT", "Invert", "Invert voxel selection. 反转当前体素选择"),
         ),
         default="ALL",
     )
+
+    @classmethod
+    def description(cls, context, properties):
+        descriptions = {
+            "ALL": ("Select every editable voxel.", "选择全部可编辑体素。"),
+            "NONE": ("Deselect every editable voxel.", "取消选择全部可编辑体素。"),
+            "INVERT": ("Invert the current editable voxel selection.", "反转当前可编辑体素选择。"),
+        }
+        value = descriptions.get(str(getattr(properties, "action", "")))
+        return translated(context, *value) if value else cls.bl_description
 
     def execute(self, context):
         try:
@@ -218,7 +253,7 @@ class VOXELIZER_OT_select(_EditableOperator, Operator):
 class VOXELIZER_OT_box_select(_EditableOperator, Operator):
     bl_idname = "voxelizer.box_select_voxels"
     bl_label = "Box Select Voxels"
-    bl_description = "Start Blender's native box selection on editable voxel points"
+    bl_description = "Start Blender's native box selection on editable voxel points. 对可编辑体素点启动 Blender 原生框选"
 
     def invoke(self, context, _event):
         try:
@@ -241,6 +276,7 @@ class VOXELIZER_OT_box_select(_EditableOperator, Operator):
 class VOXELIZER_OT_delete_selected(_EditableOperator, Operator):
     bl_idname = "voxelizer.delete_selected_voxels"
     bl_label = "Delete Selected Voxels"
+    bl_description = "Delete selected voxels and record a replayable edit. 删除选中体素并记录可重放编辑"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -269,6 +305,7 @@ class VOXELIZER_OT_delete_selected(_EditableOperator, Operator):
 class VOXELIZER_OT_add_cursor(_EditableOperator, Operator):
     bl_idname = "voxelizer.add_voxel_at_cursor"
     bl_label = "Add Voxel at Cursor"
+    bl_description = "Add one voxel at the nearest integer grid coordinate to the 3D Cursor. 在距 3D 游标最近的整数网格坐标添加体素"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -305,10 +342,32 @@ class VOXELIZER_OT_add_cursor(_EditableOperator, Operator):
 class VOXELIZER_OT_move_selected(_EditableOperator, Operator):
     bl_idname = "voxelizer.move_selected_voxels"
     bl_label = "Move Selected Voxels"
-    bl_description = "Move selected voxels in minimum-grid steps; destinations overwrite"
+    bl_description = "Move selected voxels in minimum-grid steps; occupied destinations are overwritten. 按最小网格步长移动选中体素，目标位置已有体素时将被覆盖"
     bl_options = {"REGISTER", "UNDO"}
 
-    delta: IntVectorProperty(name="Grid Delta", size=3, default=(1, 0, 0))
+    delta: IntVectorProperty(
+        name="Grid Delta",
+        description="Integer movement measured in minimum voxel-grid steps. 以最小体素网格步长计量的整数位移",
+        size=3,
+        default=(1, 0, 0),
+    )
+
+    @classmethod
+    def description(cls, context, properties):
+        delta = tuple(int(value) for value in getattr(properties, "delta", (0, 0, 0)))
+        labels = {
+            (-1, 0, 0): "-X", (1, 0, 0): "+X",
+            (0, -1, 0): "-Y", (0, 1, 0): "+Y",
+            (0, 0, -1): "-Z", (0, 0, 1): "+Z",
+        }
+        label = labels.get(delta)
+        if label is None:
+            return cls.bl_description
+        return translated(
+            context,
+            f"Move selected voxels one minimum-grid step toward {label}; occupied destinations are overwritten.",
+            f"将选中体素沿 {label} 方向移动一个最小网格步长；目标位置已有体素时将被覆盖。",
+        )
 
     def execute(self, context):
         try:
@@ -351,6 +410,7 @@ class VOXELIZER_OT_move_selected(_EditableOperator, Operator):
 class VOXELIZER_OT_paint_selected(_EditableOperator, Operator):
     bl_idname = "voxelizer.paint_selected_voxels"
     bl_label = "Paint Selected Voxels"
+    bl_description = "Apply the current colour and material values to selected voxels. 将当前颜色与材质参数应用到选中体素"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -397,7 +457,7 @@ class VOXELIZER_OT_paint_selected(_EditableOperator, Operator):
 class VOXELIZER_OT_pick_selected(_EditableOperator, Operator):
     bl_idname = "voxelizer.pick_selected_voxel"
     bl_label = "Pick Selected Voxel"
-    bl_description = "Load colour and material values from the first selected voxel"
+    bl_description = "Load colour and material values from the first selected voxel. 从第一个选中体素读取颜色与材质参数"
 
     def execute(self, context):
         try:
@@ -462,18 +522,31 @@ def _connected_indices(records, seed_indices, grid_size, same_colour=False):
 class VOXELIZER_OT_select_similar(_EditableOperator, Operator):
     bl_idname = "voxelizer.select_similar_voxels"
     bl_label = "Select Similar Voxels"
+    bl_description = "Expand selection by colour, material, level, or connectivity. 按颜色、材质、等级或连通关系扩展选择"
     bl_options = {"REGISTER", "UNDO"}
 
     mode: EnumProperty(
         items=(
-            ("COLOR", "Color", "Select matching direct colour"),
-            ("MATERIAL", "Material", "Select matching material ID"),
-            ("LEVEL", "Level", "Select matching adaptive level"),
-            ("CONNECTED", "Connected", "Select six-connected voxels"),
-            ("COLOR_CONNECTED", "Color Region", "Select connected matching colour"),
+            ("COLOR", "Color", "Select matching direct colour. 选择直接颜色相同的体素"),
+            ("MATERIAL", "Material", "Select matching material ID. 选择材质 ID 相同的体素"),
+            ("LEVEL", "Level", "Select matching adaptive level. 选择自适应等级相同的体素"),
+            ("CONNECTED", "Connected", "Select six-connected voxels. 选择六邻域连通体素"),
+            ("COLOR_CONNECTED", "Color Region", "Select connected matching colour. 选择连通且同色的体素区域"),
         ),
         default="COLOR",
     )
+
+    @classmethod
+    def description(cls, context, properties):
+        descriptions = {
+            "COLOR": ("Select every voxel with the seed voxel's colour.", "选择与种子体素颜色相同的全部体素。"),
+            "MATERIAL": ("Select every voxel with the seed voxel's material ID.", "选择与种子体素材质 ID 相同的全部体素。"),
+            "LEVEL": ("Select every voxel at the seed voxel's adaptive level.", "选择与种子体素自适应等级相同的全部体素。"),
+            "CONNECTED": ("Select the six-neighbour region connected to the seed.", "选择与种子体素六邻域连通的区域。"),
+            "COLOR_CONNECTED": ("Select the connected region that also matches the seed colour.", "选择与种子体素连通且颜色相同的区域。"),
+        }
+        value = descriptions.get(str(getattr(properties, "mode", "")))
+        return translated(context, *value) if value else cls.bl_description
 
     def execute(self, context):
         try:
@@ -507,6 +580,7 @@ class VOXELIZER_OT_select_similar(_EditableOperator, Operator):
 class VOXELIZER_OT_flood_fill(_EditableOperator, Operator):
     bl_idname = "voxelizer.flood_fill_voxels"
     bl_label = "Flood Fill Color Region"
+    bl_description = "Fill the connected same-colour region from selected seed voxels. 从选中种子体素填充连通的同色区域"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -533,10 +607,26 @@ class VOXELIZER_OT_flood_fill(_EditableOperator, Operator):
 class VOXELIZER_OT_mirror_selected(_EditableOperator, Operator):
     bl_idname = "voxelizer.mirror_selected_voxels"
     bl_label = "Mirror Selected Voxels"
-    bl_description = "Copy selected voxels across an object-local axis"
+    bl_description = "Copy selected voxels across an object-local axis. 沿对象局部轴镜像复制选中体素"
     bl_options = {"REGISTER", "UNDO"}
 
-    axis: EnumProperty(items=(("X", "X", ""), ("Y", "Y", ""), ("Z", "Z", "")), default="X")
+    axis: EnumProperty(
+        items=(
+            ("X", "X", "Mirror across local X. 沿局部 X 轴镜像"),
+            ("Y", "Y", "Mirror across local Y. 沿局部 Y 轴镜像"),
+            ("Z", "Z", "Mirror across local Z. 沿局部 Z 轴镜像"),
+        ),
+        default="X",
+    )
+
+    @classmethod
+    def description(cls, context, properties):
+        axis = str(getattr(properties, "axis", "X"))
+        return translated(
+            context,
+            f"Copy selected voxels across the object's local {axis} axis.",
+            f"沿对象局部 {axis} 轴镜像复制选中体素。",
+        )
 
     def execute(self, context):
         try:
@@ -582,6 +672,7 @@ class VOXELIZER_OT_mirror_selected(_EditableOperator, Operator):
 class VOXELIZER_OT_copy_voxels(_EditableOperator, Operator):
     bl_idname = "voxelizer.copy_voxels"
     bl_label = "Copy Voxels"
+    bl_description = "Copy selected voxel records to Chromoxel's internal clipboard. 将选中体素记录复制到 Chromoxel 内部剪贴板"
 
     def execute(self, context):
         try:
@@ -605,6 +696,7 @@ class VOXELIZER_OT_copy_voxels(_EditableOperator, Operator):
 class VOXELIZER_OT_paste_voxels(_EditableOperator, Operator):
     bl_idname = "voxelizer.paste_voxels"
     bl_label = "Paste Voxels at Cursor"
+    bl_description = "Paste copied voxels from the 3D Cursor's nearest grid coordinate. 从 3D 游标最近的网格坐标粘贴已复制体素"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -654,6 +746,7 @@ class VOXELIZER_OT_paste_voxels(_EditableOperator, Operator):
 class VOXELIZER_OT_palette_add(Operator):
     bl_idname = "voxelizer.palette_add"
     bl_label = "Add Palette Slot"
+    bl_description = "Add a shared editable colour and material slot. 添加共享的可编辑颜色与材质槽"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -671,6 +764,7 @@ class VOXELIZER_OT_palette_add(Operator):
 class VOXELIZER_OT_palette_remove(Operator):
     bl_idname = "voxelizer.palette_remove"
     bl_label = "Remove Palette Slot"
+    bl_description = "Remove the active palette slot; existing voxel data is not deleted. 删除活动调色板槽，但不会删除已有体素数据"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -685,7 +779,7 @@ class VOXELIZER_OT_palette_remove(Operator):
 class VOXELIZER_OT_palette_update_linked(_EditableOperator, Operator):
     bl_idname = "voxelizer.palette_update_linked"
     bl_label = "Update Linked Voxels"
-    bl_description = "Apply the active palette slot to every voxel that references it"
+    bl_description = "Apply the active palette slot to every voxel that references it. 将活动调色板槽更新到所有引用它的体素"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -722,7 +816,7 @@ class VOXELIZER_OT_palette_update_linked(_EditableOperator, Operator):
 class VOXELIZER_OT_palette_generate(_EditableOperator, Operator):
     bl_idname = "voxelizer.palette_generate"
     bl_label = "Generate Palette from Voxels"
-    bl_description = "Deterministically quantize direct voxel colours to at most 255 palette slots"
+    bl_description = "Deterministically quantize direct voxel colours to at most 255 palette slots. 将直接体素颜色确定性量化为最多 255 个调色板槽"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.1 - 2026-08-12
+
+- Fixed Blender 5.1 icon compatibility errors (`MOD_NODES` and the later
+  `BORDER_RECT`) that could stop N-panel drawing and hide subsequent controls.
+- Added a permanent, narrow-sidebar-safe **START HERE** area with source status,
+  language, output type, and vertically stacked Preview/Bake actions.
+- Added concise bilingual hover descriptions to visible settings, enum buttons,
+  workflow sections, editing actions, palette controls, and VOX import/export.
+  Shared operators now explain the exact pressed choice, including quality,
+  selection mode, movement direction, similarity rule, and mirror axis.
+- Added empty-selection, real Blender icon, complete-draw, action-order, enum
+  tooltip, and property/operator description regression coverage.
+
 ## 0.9.0 - 2026-08-12
 
 - Added real GPU Uniform occupancy prefiltering in normal interactive Blender

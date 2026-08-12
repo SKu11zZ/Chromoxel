@@ -9,7 +9,7 @@ import stat
 import zipfile
 
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FIXED_MODE = stat.S_IFREG | 0o644
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
