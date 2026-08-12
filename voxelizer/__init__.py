@@ -422,6 +422,14 @@ class VOXELIZER_PG_settings(PropertyGroup):
         max=4096,
         subtype="UNSIGNED",
     )
+    show_step_source: BoolProperty(name="1. Source", default=True)
+    show_step_grid: BoolProperty(name="2. Voxel Grid", default=True)
+    show_step_surface: BoolProperty(name="3. Surface Input", default=True)
+    show_step_colour: BoolProperty(name="4. Colour", default=True)
+    show_step_preview: BoolProperty(name="5. Preview", default=True)
+    show_step_bake: BoolProperty(name="6. Bake", default=True)
+    show_step_edit: BoolProperty(name="7. Edit & Export", default=False)
+    show_step_live: BoolProperty(name="8. Live Preview", default=False)
     show_advanced: BoolProperty(name="Advanced", default=False)
     estimate_summary: StringProperty(
         name="Estimate",
@@ -1103,258 +1111,613 @@ class VOXELIZER_PT_panel(Panel):
         layout = self.layout
         settings = context.scene.voxelizer_settings
         source = context.active_object
+        tr = lambda english, chinese: editor.translated(context, english, chinese)
 
-        source_box = layout.box()
-        source_box.label(text="Sources", icon="OUTLINER_COLLECTION")
-        source_box.prop(settings, "source_scope", expand=True)
-        if settings.source_scope == "COLLECTION":
-            source_box.prop(settings, "source_collection")
-            source_box.prop(settings, "include_hidden")
-
-        quality_box = layout.box()
-        quality_box.label(text="Voxel Grid", icon="MOD_REMESH")
-        row = quality_box.row(align=True)
-        for identifier, label in (("COARSE", "Coarse"), ("MEDIUM", "Medium"), ("FINE", "Fine")):
-            operator = row.operator(
-                VOXELIZER_OT_quality_preset.bl_idname,
-                text=label,
-                depress=settings.quality_preset == identifier,
-            )
-            operator.preset = identifier
-        quality_box.prop(settings, "voxel_size")
-        quality_box.prop(settings, "sampling_mode", expand=True)
-        if settings.sampling_mode == "ADAPTIVE":
-            quality_box.prop(settings, "adaptive_max_level")
-            smallest = settings.voxel_size / (2 ** settings.adaptive_max_level)
-            quality_box.label(text=f"Automatic minimum size: {smallest:.4g} BU")
-        quality_box.prop(settings, "cube_gap")
-        quality_box.prop(settings, "grid_origin_mode")
-        if settings.grid_origin_mode == "CUSTOM":
-            quality_box.prop(settings, "grid_origin")
-        quality_box.operator(VOXELIZER_OT_estimate.bl_idname, icon="INFO")
-        quality_box.label(
-            text=settings.estimate_summary,
-            icon="CHECKMARK" if settings.estimate_ok else "ERROR",
-        )
-        if settings.estimate_detail:
-            quality_box.label(text=settings.estimate_detail)
-
-        repair_box = layout.box()
-        repair_box.label(text="Surface Input", icon="MESH_DATA")
-        repair_box.prop(settings, "auto_watertight_copy")
-        if settings.auto_watertight_copy:
-            repair_box.prop(settings, "repair_voxel_size")
-        if source is not None and source.type == "MESH" and not core.is_tool_output(source):
-            checked = (
-                settings.surface_check_state != "UNCHECKED"
-                and settings.surface_check_source == source.name_full
-                and settings.surface_check_mesh_pointer == str(source.data.as_pointer())
-            )
-            repair_box.operator(VOXELIZER_OT_check_surface.bl_idname, icon="VIEWZOOM")
-            if not checked:
-                repair_box.label(text="Surface not checked", icon="INFO")
-            elif settings.surface_check_state == "ERROR":
-                repair_box.label(text="Surface check failed", icon="ERROR")
-            elif settings.surface_check_watertight:
-                repair_box.label(text="Active source is watertight", icon="CHECKMARK")
-            elif settings.auto_watertight_copy:
-                repair_box.label(text="Private repair copy will be used", icon="MOD_REMESH")
-            else:
-                repair_box.label(text="Non-manifold source is blocked", icon="ERROR")
-            if checked:
-                repair_box.label(
-                    text=(
-                        f"Boundary {settings.surface_check_boundary_edges} | "
-                        f"Components {settings.surface_check_components} | "
-                        f"{settings.surface_check_seconds:.3f}s"
-                    )
-                )
-        else:
-            repair_box.label(text="Select an original Mesh source", icon="INFO")
-
-        colour_box = layout.box()
-        colour_box.label(text="Colour", icon="IMAGE_DATA")
-        colour_box.prop(settings, "auto_material_images")
-        if source is not None and source.type == "MESH":
-            colour_box.prop_search(settings, "uv_map", source.data, "uv_layers", text="UV Map")
-        else:
-            colour_box.prop(settings, "uv_map")
-        colour_box.prop(settings, "base_color_image", text="Image Override")
-        colour_box.prop(settings, "texture_filter")
-        colour_box.prop(settings, "fallback_color")
-
-        edit_box = layout.box()
-        edit_box.label(
-            text=editor.translated(context, "Voxel Edit", "体素编辑"),
-            icon="EDITMODE_HLT",
-        )
-        edit_box.prop(settings, "ui_language")
-        if editable.is_editable(source):
-            diagnostics = editable.validate_editable(source)
-            edit_box.label(
-                text=(
-                    f"{diagnostics['voxels']:,} voxels | "
-                    f"{diagnostics['chunks']:,} chunks | "
-                    f"grid {diagnostics['grid_size']:.4g} BU"
-                ),
-                icon=(
-                    "CHECKMARK"
-                    if diagnostics["duplicate_coordinates"] == 0
-                    and diagnostics["within_model_limit"]
-                    else "ERROR"
-                ),
-            )
-            if not diagnostics["within_model_limit"]:
-                edit_box.label(
-                    text=editor.translated(
-                        context,
-                        "Over 100,000 points: split into multiple models",
-                        "超过 100,000 点：请拆分为多个模型",
-                    ),
-                    icon="ERROR",
-                )
-            row = edit_box.row(align=True)
-            row.operator(
-                editor.VOXELIZER_OT_enter_edit.bl_idname,
-                text=editor.translated(context, "Enter Edit", "进入编辑"),
-                icon="EDITMODE_HLT",
-            )
-            row.operator(
-                editor.VOXELIZER_OT_exit_edit.bl_idname,
-                text=editor.translated(context, "Exit Edit", "退出编辑"),
-                icon="OBJECT_DATAMODE",
-            )
-            edit_box.operator(
-                editor.VOXELIZER_OT_revoxelize_edits.bl_idname,
-                text=editor.translated(
-                    context,
-                    "Re-voxelize + Replay Edits",
-                    "重新体素化并重放编辑",
-                ),
-                icon="FILE_REFRESH",
-            )
-            row = edit_box.row(align=True)
-            for action, label_en, label_zh in (
-                ("ALL", "All", "全选"),
-                ("NONE", "None", "取消"),
-                ("INVERT", "Invert", "反选"),
-            ):
+        def enum_buttons(owner, property_name, choices):
+            row = owner.row(align=True)
+            for value, english, chinese in choices:
                 operator = row.operator(
-                    editor.VOXELIZER_OT_select.bl_idname,
-                    text=editor.translated(context, label_en, label_zh),
+                    "wm.context_set_enum",
+                    text=tr(english, chinese),
+                    depress=getattr(settings, property_name) == value,
                 )
-                operator.action = action
-            edit_box.operator(editor.VOXELIZER_OT_box_select.bl_idname, icon="BORDER_RECT")
-            row = edit_box.row(align=True)
-            row.operator(editor.VOXELIZER_OT_add_cursor.bl_idname, icon="ADD")
-            row.operator(editor.VOXELIZER_OT_delete_selected.bl_idname, icon="REMOVE")
-            move_grid = edit_box.grid_flow(columns=3, align=True)
-            for delta, label in (
-                ((-1, 0, 0), "-X"), ((1, 0, 0), "+X"),
-                ((0, -1, 0), "-Y"), ((0, 1, 0), "+Y"),
-                ((0, 0, -1), "-Z"), ((0, 0, 1), "+Z"),
-            ):
-                operator = move_grid.operator(editor.VOXELIZER_OT_move_selected.bl_idname, text=label)
-                operator.delta = delta
-            row = edit_box.row(align=True)
-            row.operator(editor.VOXELIZER_OT_pick_selected.bl_idname, icon="EYEDROPPER")
-            row.operator(editor.VOXELIZER_OT_paint_selected.bl_idname, icon="BRUSH_DATA")
-            row.operator(editor.VOXELIZER_OT_flood_fill.bl_idname, icon="UV_SYNC_SELECT")
-            select_grid = edit_box.grid_flow(columns=2, align=True)
-            for mode, label_en, label_zh in (
-                ("COLOR", "Same Color", "同颜色"),
-                ("MATERIAL", "Same Material", "同材质"),
-                ("LEVEL", "Same Level", "同等级"),
-                ("CONNECTED", "Connected", "连通区域"),
-                ("COLOR_CONNECTED", "Color Region", "颜色区域"),
-            ):
-                operator = select_grid.operator(
-                    editor.VOXELIZER_OT_select_similar.bl_idname,
-                    text=editor.translated(context, label_en, label_zh),
+                operator.data_path = f"scene.voxelizer_settings.{property_name}"
+                operator.value = value
+
+        def step_box(property_name, english, chinese, icon):
+            box = layout.box()
+            box.prop(
+                settings,
+                property_name,
+                text=tr(english, chinese),
+                icon="TRIA_DOWN" if getattr(settings, property_name) else "TRIA_RIGHT",
+                emboss=False,
+            )
+            return box if getattr(settings, property_name) else None
+
+        # Always keep language, output mode, and the two primary actions above
+        # the numbered workflow. No source inspection is performed here.
+        quick_box = layout.box()
+        quick_box.label(text=tr("Quick Start", "快速开始"), icon="PLAY")
+        quick_box.prop(settings, "ui_language", text=tr("Language", "语言"))
+        quick_box.label(text=tr("Bake Output", "烘焙输出"), icon="MESH_CUBE")
+        enum_buttons(quick_box, "bake_mode", (
+            ("EDITABLE", "Editable", "可编辑点"),
+            ("REALIZED", "Cubes", "实体方块"),
+            ("SURFACE", "Surface", "表面网格"),
+            ("GREEDY", "Greedy", "贪心网格"),
+        ))
+        quick_actions = quick_box.row(align=True)
+        quick_actions.enabled = not settings.task_running
+        quick_actions.scale_y = 1.35
+        quick_actions.operator(
+            VOXELIZER_OT_preview.bl_idname,
+            text=tr("Create Preview", "创建预览"),
+            icon="MOD_NODES",
+        )
+        quick_actions.operator(
+            VOXELIZER_OT_bake.bl_idname,
+            text=tr("Start Bake", "开始烘焙"),
+            icon="MESH_CUBE",
+        )
+
+        if settings.task_running:
+            quick_box.label(text=settings.task_phase, icon="TIME")
+            if hasattr(quick_box, "progress"):
+                quick_box.progress(
+                    factor=settings.task_progress,
+                    type="BAR",
+                    text=f"{settings.task_progress * 100.0:.0f}%",
                 )
-                operator.mode = mode
-            row = edit_box.row(align=True)
-            for axis in "XYZ":
-                operator = row.operator(editor.VOXELIZER_OT_mirror_selected.bl_idname, text=f"Mirror {axis}")
-                operator.axis = axis
-            row = edit_box.row(align=True)
-            row.operator(editor.VOXELIZER_OT_copy_voxels.bl_idname, icon="COPYDOWN")
-            row.operator(editor.VOXELIZER_OT_paste_voxels.bl_idname, icon="PASTEDOWN")
-        else:
-            edit_box.label(
-                text=editor.translated(
-                    context,
-                    "Create or select a Chromoxel Preview",
-                    "请创建或选择 Chromoxel 预览",
+            else:
+                row = quick_box.row()
+                row.enabled = False
+                row.prop(settings, "task_progress", slider=True, text="")
+            quick_box.label(text=settings.task_message)
+            quick_box.operator(
+                VOXELIZER_OT_cancel_job.bl_idname,
+                text=tr("Cancel Task", "取消任务"),
+                icon="CANCEL",
+            )
+        elif settings.task_message:
+            quick_box.label(text=settings.task_message, icon="CHECKMARK")
+
+        source_box = step_box(
+            "show_step_source", "1. Select Source", "1. 选择源模型", "OUTLINER_COLLECTION"
+        )
+        if source_box is not None:
+            enum_buttons(source_box, "source_scope", (
+                ("ACTIVE", "Active", "活动对象"),
+                ("SELECTED", "Selected", "已选对象"),
+                ("COLLECTION", "Collection", "集合"),
+            ))
+            if settings.source_scope == "COLLECTION":
+                source_box.prop(
+                    settings,
+                    "source_collection",
+                    text=tr("Source Collection", "源集合"),
+                )
+                source_box.prop(
+                    settings,
+                    "include_hidden",
+                    text=tr("Include Hidden", "包含隐藏对象"),
+                )
+            source_box.label(
+                text=tr(
+                    "Select the original Mesh object(s) to process.",
+                    "选择要处理的原始 Mesh 对象。",
                 ),
                 icon="INFO",
             )
 
-        material_box = layout.box()
-        material_box.label(
-            text=editor.translated(context, "Voxel Color & Material", "体素颜色与材质"),
-            icon="MATERIAL",
+        quality_box = step_box(
+            "show_step_grid", "2. Set Voxel Grid", "2. 设置体素网格", "MOD_REMESH"
         )
-        material_box.prop(settings, "color_mode", expand=True)
-        if editable.is_editable(source):
-            material_box.operator(editor.VOXELIZER_OT_palette_generate.bl_idname, icon="COLOR")
-        if settings.color_mode == "DIRECT":
-            material_box.prop(settings, "edit_color")
-            material_box.prop(settings, "edit_material_id")
-            material_box.prop(settings, "edit_roughness")
-            material_box.prop(settings, "edit_metallic")
-            material_box.prop(settings, "edit_emission")
-        else:
-            material_box.template_list(
-                "UI_UL_list", "chromoxel_palette", settings, "palette_slots",
-                settings, "palette_active_index", rows=3,
+        if quality_box is not None:
+            row = quality_box.row(align=True)
+            for identifier, english, chinese in (
+                ("COARSE", "Coarse", "粗略"),
+                ("MEDIUM", "Medium", "中等"),
+                ("FINE", "Fine", "精细"),
+            ):
+                operator = row.operator(
+                    VOXELIZER_OT_quality_preset.bl_idname,
+                    text=tr(english, chinese),
+                    depress=settings.quality_preset == identifier,
+                )
+                operator.preset = identifier
+            quality_box.prop(settings, "voxel_size", text=tr("Voxel Size", "体素尺寸"))
+            enum_buttons(quality_box, "sampling_mode", (
+                ("UNIFORM", "Uniform", "统一"),
+                ("ADAPTIVE", "Adaptive", "自适应"),
+            ))
+            if settings.sampling_mode == "ADAPTIVE":
+                quality_box.prop(
+                    settings,
+                    "adaptive_max_level",
+                    text=tr("Max Detail Level", "最大细节等级"),
+                )
+                smallest = settings.voxel_size / (2 ** settings.adaptive_max_level)
+                quality_box.label(
+                    text=tr(
+                        f"Automatic minimum size: {smallest:.4g} BU",
+                        f"自动最小尺寸：{smallest:.4g} BU",
+                    )
+                )
+            quality_box.prop(settings, "cube_gap", text=tr("Cube Gap", "体素间隙"))
+            quality_box.label(text=tr("Grid Origin", "网格原点"))
+            enum_buttons(quality_box, "grid_origin_mode", (
+                ("OBJECT", "Object", "对象原点"),
+                ("CUSTOM", "Custom", "自定义"),
+                ("BOUNDS", "Bounds", "边界"),
+            ))
+            if settings.grid_origin_mode == "CUSTOM":
+                quality_box.prop(
+                    settings,
+                    "grid_origin",
+                    text=tr("Custom Origin", "自定义原点"),
+                )
+            quality_box.operator(
+                VOXELIZER_OT_estimate.bl_idname,
+                text=tr("Estimate Work", "估算工作量"),
+                icon="INFO",
             )
-            row = material_box.row(align=True)
-            row.operator(editor.VOXELIZER_OT_palette_add.bl_idname, icon="ADD", text="")
-            row.operator(editor.VOXELIZER_OT_palette_remove.bl_idname, icon="REMOVE", text="")
-            if settings.palette_slots:
-                palette_index = min(settings.palette_active_index, len(settings.palette_slots) - 1)
-                slot = settings.palette_slots[palette_index]
-                material_box.prop(slot, "name")
-                material_box.prop(slot, "color")
-                material_box.prop(slot, "roughness")
-                material_box.prop(slot, "metallic")
-                material_box.prop(slot, "emission")
-                material_box.operator(editor.VOXELIZER_OT_palette_update_linked.bl_idname)
+            quality_box.label(
+                text=settings.estimate_summary,
+                icon="CHECKMARK" if settings.estimate_ok else "ERROR",
+            )
+            if settings.estimate_detail:
+                quality_box.label(text=settings.estimate_detail)
 
-        vox_box = layout.box()
-        vox_box.label(text="MagicaVoxel .vox", icon="FILE_3D")
-        vox_box.prop(settings, "vox_import_size")
-        row = vox_box.row(align=True)
-        row.operator(vox_io.VOXELIZER_OT_import_vox.bl_idname, icon="IMPORT")
-        export_row = row.row(align=True)
-        export_row.enabled = editable.is_editable(source)
-        export_row.operator(vox_io.VOXELIZER_OT_export_vox.bl_idname, icon="EXPORT")
+        repair_box = step_box(
+            "show_step_surface", "3. Validate Surface", "3. 检查表面", "MESH_DATA"
+        )
+        if repair_box is not None:
+            repair_box.prop(
+                settings,
+                "auto_watertight_copy",
+                text=tr("Auto Watertight Copy", "自动闭合副本"),
+            )
+            if settings.auto_watertight_copy:
+                repair_box.prop(
+                    settings,
+                    "repair_voxel_size",
+                    text=tr("Repair Voxel Size", "修复体素尺寸"),
+                )
+            if source is not None and source.type == "MESH" and not core.is_tool_output(source):
+                checked = (
+                    settings.surface_check_state != "UNCHECKED"
+                    and settings.surface_check_source == source.name_full
+                    and settings.surface_check_mesh_pointer == str(source.data.as_pointer())
+                )
+                repair_box.operator(
+                    VOXELIZER_OT_check_surface.bl_idname,
+                    text=tr("Check Surface", "检查表面"),
+                    icon="VIEWZOOM",
+                )
+                if not checked:
+                    repair_box.label(text=tr("Surface not checked", "尚未检查表面"), icon="INFO")
+                elif settings.surface_check_state == "ERROR":
+                    repair_box.label(text=tr("Surface check failed", "表面检查失败"), icon="ERROR")
+                elif settings.surface_check_watertight:
+                    repair_box.label(
+                        text=tr("Active source is watertight", "活动源模型已闭合"),
+                        icon="CHECKMARK",
+                    )
+                elif settings.auto_watertight_copy:
+                    repair_box.label(
+                        text=tr("Private repair copy will be used", "将使用私有修复副本"),
+                        icon="MOD_REMESH",
+                    )
+                else:
+                    repair_box.label(
+                        text=tr("Non-manifold source is blocked", "非流形源模型已被阻止"),
+                        icon="ERROR",
+                    )
+                if checked:
+                    repair_box.label(
+                        text=tr(
+                            f"Boundary {settings.surface_check_boundary_edges} | "
+                            f"Components {settings.surface_check_components} | "
+                            f"{settings.surface_check_seconds:.3f}s",
+                            f"边界 {settings.surface_check_boundary_edges} | "
+                            f"连通块 {settings.surface_check_components} | "
+                            f"{settings.surface_check_seconds:.3f}s",
+                        )
+                    )
+            else:
+                repair_box.label(
+                    text=tr("Select an original Mesh source", "请选择原始 Mesh 源对象"),
+                    icon="INFO",
+                )
+
+        colour_box = step_box(
+            "show_step_colour", "4. Set Colour", "4. 设置颜色", "IMAGE_DATA"
+        )
+        if colour_box is not None:
+            colour_box.prop(
+                settings,
+                "auto_material_images",
+                text=tr("Auto Material Images", "自动查找材质贴图"),
+            )
+            if source is not None and source.type == "MESH":
+                colour_box.prop_search(
+                    settings,
+                    "uv_map",
+                    source.data,
+                    "uv_layers",
+                    text=tr("UV Map", "UV 映射"),
+                )
+            else:
+                colour_box.prop(settings, "uv_map", text=tr("UV Map", "UV 映射"))
+            colour_box.prop(
+                settings,
+                "base_color_image",
+                text=tr("Image Override", "覆盖贴图"),
+            )
+            colour_box.label(text=tr("Texture Filter", "纹理过滤"))
+            enum_buttons(colour_box, "texture_filter", (
+                ("BILINEAR", "Bilinear", "双线性"),
+                ("NEAREST", "Nearest", "最近点"),
+            ))
+            colour_box.prop(
+                settings,
+                "fallback_color",
+                text=tr("Fallback Color", "备用颜色"),
+            )
+
+        preview_box = step_box(
+            "show_step_preview", "5. Create Preview", "5. 创建预览", "MOD_NODES"
+        )
+        if preview_box is not None:
+            preview_actions = preview_box.column(align=True)
+            preview_actions.enabled = not settings.task_running
+            preview_actions.operator(
+                VOXELIZER_OT_preview.bl_idname,
+                text=tr("Create / Update Preview", "创建 / 更新预览"),
+                icon="MOD_NODES",
+            )
+            preview_box.label(
+                text=tr(
+                    "Preview remains editable through Geometry Nodes.",
+                    "预览通过 Geometry Nodes 保持可编辑。",
+                ),
+                icon="INFO",
+            )
+
+        bake_box = step_box(
+            "show_step_bake", "6. Bake Output", "6. 烘焙输出", "MESH_CUBE"
+        )
+        if bake_box is not None:
+            enum_buttons(bake_box, "bake_mode", (
+                ("EDITABLE", "Editable", "可编辑点"),
+                ("REALIZED", "Cubes", "实体方块"),
+                ("SURFACE", "Surface", "表面网格"),
+                ("GREEDY", "Greedy", "贪心网格"),
+            ))
+            bake_box.prop(
+                settings,
+                "remove_enclosed_voxels",
+                text=tr("Remove Enclosed Voxels", "移除封闭内部体素"),
+            )
+            bake_actions = bake_box.column(align=True)
+            bake_actions.enabled = not settings.task_running
+            bake_actions.operator(
+                VOXELIZER_OT_bake.bl_idname,
+                text=tr("Start Bake", "开始烘焙"),
+                icon="MESH_CUBE",
+            )
+            bake_actions.operator(
+                VOXELIZER_OT_clear.bl_idname,
+                text=tr("Clear Outputs", "清除输出"),
+                icon="TRASH",
+            )
+
+        edit_box = step_box(
+            "show_step_edit", "7. Edit & Export", "7. 编辑与导出", "EDITMODE_HLT"
+        )
+        if edit_box is not None:
+            editable_source = editable.is_editable(source)
+            voxel_edit_box = edit_box.box()
+            voxel_edit_box.label(text=tr("Voxel Edit", "体素编辑"), icon="EDITMODE_HLT")
+            if editable_source:
+                diagnostics = editable.validate_editable(source)
+                voxel_edit_box.label(
+                    text=tr(
+                        f"{diagnostics['voxels']:,} voxels | "
+                        f"{diagnostics['chunks']:,} chunks | "
+                        f"grid {diagnostics['grid_size']:.4g} BU",
+                        f"{diagnostics['voxels']:,} 体素 | "
+                        f"{diagnostics['chunks']:,} 分块 | "
+                        f"网格 {diagnostics['grid_size']:.4g} BU",
+                    ),
+                    icon=(
+                        "CHECKMARK"
+                        if diagnostics["duplicate_coordinates"] == 0
+                        and diagnostics["within_model_limit"]
+                        else "ERROR"
+                    ),
+                )
+                if not diagnostics["within_model_limit"]:
+                    voxel_edit_box.label(
+                        text=tr(
+                            "Over 100,000 points: split into multiple models",
+                            "超过 100,000 点：请拆分为多个模型",
+                        ),
+                        icon="ERROR",
+                    )
+                row = voxel_edit_box.row(align=True)
+                row.operator(
+                    editor.VOXELIZER_OT_enter_edit.bl_idname,
+                    text=tr("Enter Edit", "进入编辑"),
+                    icon="EDITMODE_HLT",
+                )
+                row.operator(
+                    editor.VOXELIZER_OT_exit_edit.bl_idname,
+                    text=tr("Exit Edit", "退出编辑"),
+                    icon="OBJECT_DATAMODE",
+                )
+                voxel_edit_box.operator(
+                    editor.VOXELIZER_OT_revoxelize_edits.bl_idname,
+                    text=tr("Re-voxelize + Replay Edits", "重新体素化并重放编辑"),
+                    icon="FILE_REFRESH",
+                )
+                row = voxel_edit_box.row(align=True)
+                for action, english, chinese in (
+                    ("ALL", "All", "全选"),
+                    ("NONE", "None", "取消"),
+                    ("INVERT", "Invert", "反选"),
+                ):
+                    operator = row.operator(
+                        editor.VOXELIZER_OT_select.bl_idname,
+                        text=tr(english, chinese),
+                    )
+                    operator.action = action
+                voxel_edit_box.operator(
+                    editor.VOXELIZER_OT_box_select.bl_idname,
+                    text=tr("Box Select", "框选"),
+                    icon="BORDER_RECT",
+                )
+                row = voxel_edit_box.row(align=True)
+                row.operator(
+                    editor.VOXELIZER_OT_add_cursor.bl_idname,
+                    text=tr("Add", "添加"),
+                    icon="ADD",
+                )
+                row.operator(
+                    editor.VOXELIZER_OT_delete_selected.bl_idname,
+                    text=tr("Delete", "删除"),
+                    icon="REMOVE",
+                )
+                move_grid = voxel_edit_box.grid_flow(columns=3, align=True)
+                for delta, label in (
+                    ((-1, 0, 0), "-X"), ((1, 0, 0), "+X"),
+                    ((0, -1, 0), "-Y"), ((0, 1, 0), "+Y"),
+                    ((0, 0, -1), "-Z"), ((0, 0, 1), "+Z"),
+                ):
+                    operator = move_grid.operator(
+                        editor.VOXELIZER_OT_move_selected.bl_idname,
+                        text=label,
+                    )
+                    operator.delta = delta
+                row = voxel_edit_box.row(align=True)
+                row.operator(
+                    editor.VOXELIZER_OT_pick_selected.bl_idname,
+                    text=tr("Pick", "吸色"),
+                    icon="EYEDROPPER",
+                )
+                row.operator(
+                    editor.VOXELIZER_OT_paint_selected.bl_idname,
+                    text=tr("Paint", "上色"),
+                    icon="BRUSH_DATA",
+                )
+                row.operator(
+                    editor.VOXELIZER_OT_flood_fill.bl_idname,
+                    text=tr("Fill", "填充"),
+                    icon="UV_SYNC_SELECT",
+                )
+                select_grid = voxel_edit_box.grid_flow(columns=2, align=True)
+                for mode, english, chinese in (
+                    ("COLOR", "Same Color", "同颜色"),
+                    ("MATERIAL", "Same Material", "同材质"),
+                    ("LEVEL", "Same Level", "同等级"),
+                    ("CONNECTED", "Connected", "连通区域"),
+                    ("COLOR_CONNECTED", "Color Region", "颜色区域"),
+                ):
+                    operator = select_grid.operator(
+                        editor.VOXELIZER_OT_select_similar.bl_idname,
+                        text=tr(english, chinese),
+                    )
+                    operator.mode = mode
+                row = voxel_edit_box.row(align=True)
+                for axis in "XYZ":
+                    operator = row.operator(
+                        editor.VOXELIZER_OT_mirror_selected.bl_idname,
+                        text=tr(f"Mirror {axis}", f"镜像 {axis}"),
+                    )
+                    operator.axis = axis
+                row = voxel_edit_box.row(align=True)
+                row.operator(
+                    editor.VOXELIZER_OT_copy_voxels.bl_idname,
+                    text=tr("Copy", "复制"),
+                    icon="COPYDOWN",
+                )
+                row.operator(
+                    editor.VOXELIZER_OT_paste_voxels.bl_idname,
+                    text=tr("Paste", "粘贴"),
+                    icon="PASTEDOWN",
+                )
+            else:
+                voxel_edit_box.label(
+                    text=tr(
+                        "Create or select a Chromoxel Preview",
+                        "请创建或选择 Chromoxel 预览",
+                    ),
+                    icon="INFO",
+                )
+
+            material_box = edit_box.box()
+            material_box.label(
+                text=tr("Voxel Color & Material", "体素颜色与材质"),
+                icon="MATERIAL",
+            )
+            enum_buttons(material_box, "color_mode", (
+                ("DIRECT", "Direct", "直接颜色"),
+                ("PALETTE", "Palette", "调色板"),
+            ))
+            if editable_source:
+                material_box.operator(
+                    editor.VOXELIZER_OT_palette_generate.bl_idname,
+                    text=tr("Generate Palette", "生成调色板"),
+                    icon="COLOR",
+                )
+            if settings.color_mode == "DIRECT":
+                material_box.prop(settings, "edit_color", text=tr("Edit Color", "编辑颜色"))
+                material_box.prop(settings, "edit_material_id", text=tr("Material ID", "材质 ID"))
+                material_box.prop(settings, "edit_roughness", text=tr("Roughness", "粗糙度"))
+                material_box.prop(settings, "edit_metallic", text=tr("Metallic", "金属度"))
+                material_box.prop(settings, "edit_emission", text=tr("Emission", "自发光"))
+            else:
+                material_box.template_list(
+                    "UI_UL_list", "chromoxel_palette", settings, "palette_slots",
+                    settings, "palette_active_index", rows=3,
+                )
+                row = material_box.row(align=True)
+                row.operator(editor.VOXELIZER_OT_palette_add.bl_idname, icon="ADD", text="")
+                row.operator(editor.VOXELIZER_OT_palette_remove.bl_idname, icon="REMOVE", text="")
+                if settings.palette_slots:
+                    palette_index = min(
+                        settings.palette_active_index,
+                        len(settings.palette_slots) - 1,
+                    )
+                    slot = settings.palette_slots[palette_index]
+                    material_box.prop(slot, "name", text=tr("Name", "名称"))
+                    material_box.prop(slot, "color", text=tr("Color", "颜色"))
+                    material_box.prop(slot, "roughness", text=tr("Roughness", "粗糙度"))
+                    material_box.prop(slot, "metallic", text=tr("Metallic", "金属度"))
+                    material_box.prop(slot, "emission", text=tr("Emission", "自发光"))
+                    material_box.operator(
+                        editor.VOXELIZER_OT_palette_update_linked.bl_idname,
+                        text=tr("Update Linked Voxels", "更新关联体素"),
+                    )
+
+            vox_box = edit_box.box()
+            vox_box.label(text="MagicaVoxel .vox", icon="FILE_3D")
+            vox_box.prop(
+                settings,
+                "vox_import_size",
+                text=tr("VOX Unit Size", ".vox 单位尺寸"),
+            )
+            row = vox_box.row(align=True)
+            row.operator(
+                vox_io.VOXELIZER_OT_import_vox.bl_idname,
+                text=tr("Import .vox", "导入 .vox"),
+                icon="IMPORT",
+            )
+            export_row = row.row(align=True)
+            export_row.enabled = editable_source
+            export_row.operator(
+                vox_io.VOXELIZER_OT_export_vox.bl_idname,
+                text=tr("Export .vox", "导出 .vox"),
+                icon="EXPORT",
+            )
+
+        live_box = step_box(
+            "show_step_live", "8. Live Preview", "8. 实时预览", "FILE_REFRESH"
+        )
+        if live_box is not None:
+            live_box.prop(settings, "live_update", text=tr("Live Update", "实时更新"))
+            live_box.prop(settings, "live_debounce", text=tr("Debounce", "防抖延迟"))
+            live_box.operator(
+                VOXELIZER_OT_live_toggle.bl_idname,
+                text=(
+                    tr("Stop Live", "停止实时预览")
+                    if settings.live_running
+                    else tr("Start Live", "启动实时预览")
+                ),
+                icon="PAUSE" if settings.live_running else "PLAY",
+            )
+            live_box.label(text=tr(f"Status: {settings.live_status}", f"状态：{settings.live_status}"))
+            live_box.label(
+                text=tr(
+                    f"Points {settings.live_point_count:,} | "
+                    f"Builds {settings.live_build_count:,} | "
+                    f"{settings.live_last_seconds:.3f}s",
+                    f"点 {settings.live_point_count:,} | "
+                    f"更新 {settings.live_build_count:,} | "
+                    f"{settings.live_last_seconds:.3f}s",
+                )
+            )
 
         advanced_box = layout.box()
         advanced_box.prop(
             settings,
             "show_advanced",
+            text=tr("Advanced", "高级设置"),
             icon="TRIA_DOWN" if settings.show_advanced else "TRIA_RIGHT",
             emboss=False,
         )
         if settings.show_advanced:
             if settings.sampling_mode == "ADAPTIVE":
-                advanced_box.prop(settings, "adaptive_texture_threshold")
-                advanced_box.prop(settings, "adaptive_geometry_angle")
-                advanced_box.prop(settings, "adaptive_geometry_max_level")
-            advanced_box.prop(settings, "use_sparse_candidates")
+                advanced_box.prop(
+                    settings,
+                    "adaptive_texture_threshold",
+                    text=tr("Texture Error", "纹理误差"),
+                )
+                advanced_box.prop(
+                    settings,
+                    "adaptive_geometry_angle",
+                    text=tr("Geometry Angle", "几何角度"),
+                )
+                advanced_box.prop(
+                    settings,
+                    "adaptive_geometry_max_level",
+                    text=tr("Geometry Detail Level", "几何细节等级"),
+                )
+            advanced_box.prop(
+                settings,
+                "use_sparse_candidates",
+                text=tr("Sparse Surface Candidates", "稀疏表面候选"),
+            )
             if settings.use_sparse_candidates:
-                advanced_box.prop(settings, "sparse_grid_threshold")
-            advanced_box.prop(settings, "sample_budget")
-            advanced_box.prop(settings, "candidate_expansion_budget")
-            advanced_box.prop(settings, "voxel_budget")
-            advanced_box.prop(settings, "sampling_chunk_size")
-            advanced_box.prop(settings, "cache_memory_mb")
-            advanced_box.prop(settings, "compute_backend", expand=True)
+                advanced_box.prop(
+                    settings,
+                    "sparse_grid_threshold",
+                    text=tr("Sparse Grid Threshold", "稀疏网格阈值"),
+                )
+            advanced_box.prop(settings, "sample_budget", text=tr("Candidate Limit", "候选上限"))
+            advanced_box.prop(
+                settings,
+                "candidate_expansion_budget",
+                text=tr("Expansion Limit", "展开上限"),
+            )
+            advanced_box.prop(settings, "voxel_budget", text=tr("Voxel Limit", "体素上限"))
+            advanced_box.prop(
+                settings,
+                "sampling_chunk_size",
+                text=tr("Task Chunk", "任务分块"),
+            )
+            advanced_box.prop(
+                settings,
+                "cache_memory_mb",
+                text=tr("Cache Memory", "缓存内存"),
+            )
+            enum_buttons(advanced_box, "compute_backend", (
+                ("AUTO", "Auto", "自动"),
+                ("GPU", "GPU", "GPU"),
+                ("CPU", "CPU", "CPU"),
+            ))
             if settings.compute_backend != "CPU":
-                advanced_box.prop(settings, "gpu_batch_size")
-                advanced_box.prop(settings, "gpu_memory_limit_mb")
+                advanced_box.prop(
+                    settings,
+                    "gpu_batch_size",
+                    text=tr("GPU Batch Size", "GPU 批次大小"),
+                )
+                advanced_box.prop(
+                    settings,
+                    "gpu_memory_limit_mb",
+                    text=tr("GPU Memory Limit (MiB)", "GPU 显存上限 (MiB)"),
+                )
                 decision = gpu_backend.resolve_backend(settings.compute_backend)
                 advanced_box.label(
                     text=(
@@ -1364,69 +1727,32 @@ class VOXELIZER_PT_panel(Panel):
                     icon="RENDER_RESULT" if decision.used == "GPU" else "INFO",
                 )
             row = advanced_box.row(align=True)
-            row.operator(VOXELIZER_OT_clear_cache.bl_idname, icon="X")
+            row.operator(
+                VOXELIZER_OT_clear_cache.bl_idname,
+                text=tr("Clear Sampling Cache", "清除采样缓存"),
+                icon="X",
+            )
             stats = core.sampling_cache_stats()
             row.label(text=f"{stats['entries']} | {stats['bytes'] / (1024 * 1024):.1f} MiB")
             advanced_box.label(
-                text=f"Prepared sources: {stats['session_entries']}",
+                text=tr(
+                    f"Prepared sources: {stats['session_entries']}",
+                    f"已准备源：{stats['session_entries']}",
+                ),
                 icon="MESH_DATA",
             )
-
             profile_box = advanced_box.box()
-            profile_box.label(
-                text=editor.translated(context, "Last voxelization", "上次体素化"),
-                icon="TIME",
-            )
+            profile_box.label(text=tr("Last voxelization", "上次体素化"), icon="TIME")
             profile_box.label(text=settings.performance_summary)
             if settings.performance_detail:
                 profile_box.label(text=settings.performance_detail)
             if settings.performance_backend:
-                profile_box.label(text=f"Backend: {settings.performance_backend}")
-
-        if settings.task_running:
-            task_box = layout.box()
-            task_box.label(text=settings.task_phase, icon="TIME")
-            if hasattr(task_box, "progress"):
-                task_box.progress(
-                    factor=settings.task_progress,
-                    type="BAR",
-                    text=f"{settings.task_progress * 100.0:.0f}%",
+                profile_box.label(
+                    text=tr(
+                        f"Backend: {settings.performance_backend}",
+                        f"后端：{settings.performance_backend}",
+                    )
                 )
-            else:
-                row = task_box.row()
-                row.enabled = False
-                row.prop(settings, "task_progress", slider=True)
-            task_box.label(text=settings.task_message)
-            task_box.operator(VOXELIZER_OT_cancel_job.bl_idname, icon="CANCEL")
-        elif settings.task_message:
-            layout.label(text=settings.task_message, icon="CHECKMARK")
-
-        action_column = layout.column(align=True)
-        action_column.enabled = not settings.task_running
-        action_column.operator(VOXELIZER_OT_preview.bl_idname, icon="MOD_NODES")
-        action_column.label(text="Preview stays editable through its Geometry Nodes modifier.")
-        action_column.prop(settings, "bake_mode")
-        action_column.prop(settings, "remove_enclosed_voxels")
-        action_column.operator(VOXELIZER_OT_bake.bl_idname, icon="MESH_CUBE")
-        action_column.operator(VOXELIZER_OT_clear.bl_idname, icon="TRASH")
-
-        live_box = layout.box()
-        live_box.label(text="Active-source Live Preview", icon="FILE_REFRESH")
-        live_box.prop(settings, "live_update")
-        live_box.prop(settings, "live_debounce")
-        live_box.operator(
-            VOXELIZER_OT_live_toggle.bl_idname,
-            text="Stop Live" if settings.live_running else "Start Live",
-            icon="PAUSE" if settings.live_running else "PLAY",
-        )
-        live_box.label(text=f"Status: {settings.live_status}")
-        live_box.label(
-            text=(
-                f"Points {settings.live_point_count:,} | "
-                f"Builds {settings.live_build_count:,} | "
-                f"{settings.live_last_seconds:.3f}s"
-            )
-        )
 
 
 CLASSES = (

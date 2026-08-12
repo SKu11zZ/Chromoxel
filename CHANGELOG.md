@@ -21,6 +21,9 @@
 - Added a no-sort fast path for newly sampled editable carriers while keeping
   stable deterministic IDs and the conservative path for existing/external
   carriers.
+- Reorganized the N-panel into an eight-step collapsible bilingual workflow.
+  Language, output mode, Preview, and Bake actions now remain at the top, and
+  the language choice covers both the setup and editing sections.
 - Kept the 512 MiB default GPU ceiling, bounded 65,536-candidate dispatches,
   automatic CPU fallback, passive N-panel, 100,000-point per-model ceiling,
   and exact symmetry behavior.

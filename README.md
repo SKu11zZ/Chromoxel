@@ -76,6 +76,21 @@ detail-aware upsampling from general version and render-pipeline differences.
 > files used for validation. Only this rendered comparison is included; the
 > source meshes and textures are not redistributed.
 
+### Dense Tripo four-model test / 高密度 Tripo 四模型测试
+
+![Chromoxel four-model Tripo comparison at original, 2K, 20K, and 100K levels](docs/images/chromoxel-tripo-four-model-levels.png)
+
+> Four locally supplied 1.38–1.49-million-face Tripo meshes are shown as the
+> original and at approximately 2K, 20K, and 100K Uniform input voxels. Every
+> row uses the same 45-degree camera, Cycles/OptiX lighting, and enclosed-voxel
+> optimization. The labels report source topology, input and visible voxel
+> counts, removed enclosed cells, final faces, and cell size.
+>
+> 四个本地提供的约 138–149 万面 Tripo 模型分别展示原始模型和约 2K、20K、100K
+> Uniform 输入体素。四行统一使用 45° 相机、Cycles/OptiX 光照与内部体素剔除；标签列出
+> 源拓扑、输入/可见体素、删除的内部体素、最终面数与体素尺寸。仅包含渲染结果，不重新分发
+> 源 GLB 或贴图。
+
 ![Chromoxel 0.6 bullseye texture-adaptive comparison](docs/images/chromoxel-adaptive-bullseye.png)
 
 > v0.6 visual acceptance: the uniform 0.50 BU grid misses most of the circular
@@ -115,6 +130,11 @@ Bake targets and MagicaVoxel `.vox` interchange.
   to see source, candidates, occupancy, colour, voxel count, BVH queries, and
   backend. CLI JSON now adds `timings`, `sampling_phase_timings`,
   `source_session_timings`, `occupancy_backend`, and `bvh_query_count`.
+- **Numbered bilingual workflow.** Language selection, output type,
+  **Create Preview**, and **Start Bake** now stay at the top. The remaining
+  controls are grouped into eight collapsible steps: source, grid, surface,
+  colour, preview, Bake, edit/export, and live preview. Choosing English or
+  Chinese now applies to the complete workflow instead of only its lower half.
 
 On the validated Blender 5.1.2 workstation, two supplied 1.47-1.49-million-
 face Tripo sources produced exact CPU/GPU coordinate matches at roughly 2K,
@@ -402,6 +422,7 @@ blender --background --factory-startup --python tests/blender_v080_performance.p
 blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
+blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
 # GPU parity needs a normal Blender window / graphics context:
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
@@ -442,6 +463,9 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
   颜色、体素数量、BVH 查询数和实际后端。CLI JSON 新增 `timings`、
   `sampling_phase_timings`、`source_session_timings`、`occupancy_backend` 与
   `bvh_query_count`。
+- **编号式双语工作流。** 语言、输出类型、**创建预览** 与 **开始烘焙** 固定在最上方；其余控件
+  分为可折叠的 1 源模型、2 体素网格、3 表面、4 颜色、5 预览、6 Bake、7 编辑与导出、
+  8 实时预览。选择英文或中文后会作用于完整流程，不再只有面板下半部分切换语言。
 
 在 Blender 5.1.2 验收工作站上，两个约 147–149 万面的 Tripo 模型在约 2K、20K 和 97K 档均与
 CPU 逐坐标一致。97K 采样冷运行分别为 3.97/6.25 秒，热运行分别为 3.75/5.46 秒；首次源准备为
@@ -670,6 +694,7 @@ blender --background --factory-startup --python tests/blender_v080_performance.p
 blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
 blender --background --factory-startup --python tests/blender_v090_session_profile.py
+blender --background --factory-startup --python tests/blender_v090_workflow_ui.py
 # GPU 一致性测试需要普通 Blender 窗口 / 图形上下文：
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
 blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py

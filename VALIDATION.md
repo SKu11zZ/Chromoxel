@@ -25,6 +25,14 @@ Date / 日期：2026-08-12
 - The passive N-panel, session/profile regression, legacy 0.5 sampling and
   cancellation contract, 0.7 editable output, 0.8 prepared sessions, 0.8.1
   CLI/panel behavior, and 0.8.2 enclosed-voxel filter passed.
+- A second Tripo pair with 1,491,682 and 1,377,362 source faces produced
+  1,975/19,654/99,152 and 1,965/19,374/98,215 input voxels. Together with the
+  archived astronaut and tank, all four models were rebuilt as Realized Cubes,
+  filtered for enclosed voxels, rendered at a common 45-degree Cycles/OptiX
+  setup, and assembled into one four-row acceptance image.
+- The numbered workflow UI regression verified that language, output type,
+  Preview, and Bake precede Step 1 and that every visible workflow heading
+  switches between English and Chinese without topology inspection.
 
 ### GPU 占据、大模型与阶段诊断
 
@@ -39,6 +47,11 @@ Date / 日期：2026-08-12
 - 精确 NumPy 分块位图把两个模型 97K 档的候选生成从约 1.28/8.20 秒降至 0.25/1.74 秒。
 - 一次性源准备仍分别需要 6.44/10.44 秒；Preview 与直接 Bake 现会复用两条 Source Session，
   手动清缓存会关闭快照并释放 GPU 资源。
+- 新增的两个 Tripo 模型分别有 1,491,682 与 1,377,362 个源面，三档输入体素为
+  1,975/19,654/99,152 与 1,965/19,374/98,215。它们与旧宇航员、坦克统一采用 45°
+  Cycles/OptiX、Realized Cubes 和内部体素剔除，并合成为四行视觉验收图。
+- 编号式 UI 回归确认语言、输出类型、预览和 Bake 位于第 1 步之前；所有可见流程标题均可在
+  中英文之间完整切换，绘制面板时仍不会遍历模型拓扑。
 
 ## Chromoxel 0.8.2 — Blender 5.1.2 PASS
 
