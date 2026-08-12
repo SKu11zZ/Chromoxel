@@ -1,5 +1,45 @@
 # Validation Record / 验证记录
 
+## Chromoxel 0.9.0 — Blender 5.1.2 PASS
+
+Date / 日期：2026-08-12
+
+### GPU occupancy, large meshes, and staged profiling
+
+- Interactive Blender created the Uniform occupancy compute shader on the
+  available GPU backend. Its conservative AABB prefilter was followed by exact
+  CPU BVH confirmation for every positive candidate.
+- Both supplied Tripo GLBs (1,488,721 and 1,471,620 source faces) matched CPU
+  coordinates exactly at the tested ~2K, ~20K, and ~97K levels: zero missing
+  and zero extra voxels in cold and warm GPU runs.
+- Model 214730 measured 0.48/1.13/3.97 seconds cold GPU and
+  0.16/1.03/3.75 seconds warm at 1,906/19,594/96,979 voxels.
+- Model 220646 measured 2.27/1.72/6.25 seconds cold GPU and
+  0.14/1.12/5.46 seconds warm at 2,027/19,651/96,953 voxels.
+- Exact NumPy chunked-mask candidate generation reduced the first model's 97K
+  candidate stage from about 1.28 seconds to 0.25 seconds and the second from
+  about 8.20 seconds to 1.74 seconds.
+- Source preparation remained a separate one-time cost of 6.44 and 10.44
+  seconds. Preview/direct Bake now retain a two-entry Source Session LRU;
+  explicit cache clearing closes snapshots and releases GPU resources.
+- The passive N-panel, session/profile regression, legacy 0.5 sampling and
+  cancellation contract, 0.7 editable output, 0.8 prepared sessions, 0.8.1
+  CLI/panel behavior, and 0.8.2 enclosed-voxel filter passed.
+
+### GPU 占据、大模型与阶段诊断
+
+- 交互式 Blender 已真实创建并运行 Uniform GPU 占据计算着色器；GPU 使用保守 AABB 预筛，
+  所有阳性候选再由 CPU BVH 精确确认。
+- 两个 Tripo GLB 的源模型分别为 1,488,721 与 1,471,620 面；在约 2K、20K、97K 三档中，
+  CPU、冷 GPU、热 GPU 的体素坐标均完全一致，没有缺失或额外体素。
+- 214730 的冷 GPU 为 0.48/1.13/3.97 秒，热 GPU 为 0.16/1.03/3.75 秒；对应体素数为
+  1,906/19,594/96,979。
+- 220646 的冷 GPU 为 2.27/1.72/6.25 秒，热 GPU 为 0.14/1.12/5.46 秒；对应体素数为
+  2,027/19,651/96,953。
+- 精确 NumPy 分块位图把两个模型 97K 档的候选生成从约 1.28/8.20 秒降至 0.25/1.74 秒。
+- 一次性源准备仍分别需要 6.44/10.44 秒；Preview 与直接 Bake 现会复用两条 Source Session，
+  手动清缓存会关闭快照并释放 GPU 资源。
+
 ## Chromoxel 0.8.2 — Blender 5.1.2 PASS
 
 Date / 日期：2026-08-12

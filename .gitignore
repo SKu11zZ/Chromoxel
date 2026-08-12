@@ -9,6 +9,7 @@ __pycache__/
 build_validation/
 benchmark_large_mesh/*.blend
 benchmark_large_mesh/*.json
+outputs/
 .idea/
 .vscode/
 Thumbs.db

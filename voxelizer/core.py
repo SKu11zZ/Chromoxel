@@ -18,7 +18,7 @@ from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import product
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Sequence
 
 import bmesh
 import bpy
@@ -61,6 +61,8 @@ _SAMPLE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SAMPLE_CACHE_BYTES = 0
 _IMAGE_BUFFER_CACHE: OrderedDict[tuple[object, ...], "_ImageBuffer"] = OrderedDict()
 _IMAGE_BUFFER_CACHE_BYTES = 0
+_SOURCE_SESSION_CACHE: OrderedDict[str, "SourceSamplingSession"] = OrderedDict()
+_SOURCE_SESSION_CACHE_LIMIT = 2
 _RUNTIME_ID_REVISIONS: dict[int, int] = {}
 _RUNTIME_REVISION_SERIAL = 0
 _RUNTIME_KEY_EPOCH = hashlib.sha256(
@@ -114,6 +116,50 @@ class VoxelSampleResult:
         yield self.colours
         yield self.count
         yield self.used_image
+
+
+class _CanonicalGridOffsets(Sequence[tuple[int, int, int]]):
+    """Lazy z/y/x full-grid view with bounded slicing for GPU batches."""
+
+    def __init__(self, floors: Sequence[int], counts: Sequence[int]):
+        self.floors = tuple(int(value) for value in floors)
+        self.counts = tuple(int(value) for value in counts)
+        self.widths = tuple(
+            max(0, self.counts[axis] - self.floors[axis])
+            for axis in range(3)
+        )
+        self.length = self.widths[0] * self.widths[1] * self.widths[2]
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[offset] for offset in range(*index.indices(self.length))]
+        index = int(index)
+        if index < 0:
+            index += self.length
+        if index < 0 or index >= self.length:
+            raise IndexError(index)
+        width_x, width_y, _width_z = self.widths
+        plane = width_x * width_y
+        z_offset, remainder = divmod(index, plane)
+        y_offset, x_offset = divmod(remainder, width_x)
+        return (
+            self.floors[0] + x_offset,
+            self.floors[1] + y_offset,
+            self.floors[2] + z_offset,
+        )
+
+    def __iter__(self):
+        return (
+            (x_offset, y_offset, z_offset)
+            for z_offset, y_offset, x_offset in product(
+                range(self.floors[2], self.counts[2]),
+                range(self.floors[1], self.counts[1]),
+                range(self.floors[0], self.counts[0]),
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -184,15 +230,24 @@ def clear_sampling_cache() -> None:
     _SAMPLE_CACHE_BYTES = 0
     _IMAGE_BUFFER_CACHE.clear()
     _IMAGE_BUFFER_CACHE_BYTES = 0
+    while _SOURCE_SESSION_CACHE:
+        _key, session = _SOURCE_SESSION_CACHE.popitem(last=False)
+        session.close()
     gpu_backend.clear_runtime_cache()
 
 
 def sampling_cache_stats() -> dict[str, int]:
+    session_gpu_bytes = sum(
+        int(getattr(session.gpu_occupancy_resource, "gpu_bytes", 0) or 0)
+        for session in _SOURCE_SESSION_CACHE.values()
+    )
     return {
         "entries": len(_SAMPLE_CACHE),
         "bytes": int(_SAMPLE_CACHE_BYTES),
         "image_entries": len(_IMAGE_BUFFER_CACHE),
         "image_bytes": int(_IMAGE_BUFFER_CACHE_BYTES),
+        "session_entries": len(_SOURCE_SESSION_CACHE),
+        "session_gpu_bytes": session_gpu_bytes,
     }
 
 
@@ -1396,7 +1451,14 @@ def _remesh_working_object(
     if context.mode != "OBJECT":
         raise VoxelizerError("Automatic watertight repair requires Object Mode.")
     previous_active = context.view_layer.objects.active
-    previous_selected = tuple(context.selected_objects)
+    # Timer-driven and some automation contexts omit ``selected_objects`` even
+    # though the view layer and Object operators are valid.  Derive the same
+    # state from the view layer so large asynchronous jobs do not fail before
+    # the user has requested any geometry work.
+    previous_selected = tuple(
+        obj for obj in context.view_layer.objects
+        if obj.select_get(view_layer=context.view_layer)
+    )
     try:
         for selected in previous_selected:
             selected.select_set(False)
@@ -2452,12 +2514,18 @@ class SourceSamplingSession:
     helper_rebuilt: bool
     base_key: str
     timings: dict[str, float]
+    gpu_occupancy_resource: object | None = None
+    occupancy_index_cache: OrderedDict[tuple[object, ...], object] = field(
+        default_factory=OrderedDict
+    )
     closed: bool = False
 
     def close(self) -> None:
         if self.closed:
             return
         self.closed = True
+        self.gpu_occupancy_resource = None
+        self.occupancy_index_cache.clear()
         meshes = [self.source_mesh]
         if self.sampling_mesh is not self.source_mesh:
             meshes.append(self.sampling_mesh)
@@ -2646,6 +2714,62 @@ def prepare_sampling_session(
             except (ReferenceError, RuntimeError):
                 pass
         raise
+
+
+def _source_session_cache_key(
+    source: bpy.types.Object,
+    settings,
+) -> str:
+    """Cheap invalidation key for reusable interactive source preparation."""
+
+    mesh = source.data
+    digest = hashlib.sha256()
+    digest.update(b"CHROMOXEL_SOURCE_SESSION_V1")
+    digest.update(struct.pack(
+        "<4Q3I",
+        _runtime_id_pointer(source),
+        _runtime_id_revision(source),
+        _runtime_id_pointer(mesh),
+        _runtime_id_revision(mesh),
+        len(mesh.vertices),
+        len(mesh.edges),
+        len(mesh.polygons),
+    ))
+    digest.update(struct.pack("<d", float(settings.repair_voxel_size)))
+    digest.update(b"\x01" if bool(settings.auto_watertight_copy) else b"\x00")
+    digest.update(_runtime_colour_inputs_fingerprint(source, settings))
+    digest.update(str(getattr(settings, "sampling_mode", "UNIFORM")).encode("ascii"))
+    digest.update(str(getattr(settings, "texture_filter", "BILINEAR")).encode("ascii"))
+    return digest.hexdigest()
+
+
+def acquire_sampling_session(
+    context: bpy.types.Context,
+    source: bpy.types.Object,
+    settings,
+) -> tuple[SourceSamplingSession, bool]:
+    """Return a cached source session, preparing it only after user action.
+
+    The cache is deliberately small because a session owns immutable mesh
+    snapshots, two BVHs, texture state, and optional GPU triangle/index data.
+    Opening or redrawing the N-panel never calls this function.
+    """
+
+    key = _source_session_cache_key(source, settings)
+    session = _SOURCE_SESSION_CACHE.get(key)
+    if session is not None and not session.closed:
+        _SOURCE_SESSION_CACHE.move_to_end(key)
+        return session, True
+    if session is not None:
+        _SOURCE_SESSION_CACHE.pop(key, None)
+    session = prepare_sampling_session(context, source, settings)
+    session.timings["cache_hit"] = False
+    _SOURCE_SESSION_CACHE[key] = session
+    _SOURCE_SESSION_CACHE.move_to_end(key)
+    while len(_SOURCE_SESSION_CACHE) > _SOURCE_SESSION_CACHE_LIMIT:
+        _old_key, old_session = _SOURCE_SESSION_CACHE.popitem(last=False)
+        old_session.close()
+    return session, False
 
 
 @contextmanager
@@ -3073,6 +3197,9 @@ def _sample_surface_voxels_from_meshes_iter(
 ) -> Iterator[SamplingProgress]:
     """Incrementally sample while evaluated mesh leases remain live."""
 
+    phase_started_total = time.perf_counter()
+    phase_timings: dict[str, float] = {}
+    phase_started = time.perf_counter()
     if session is not None:
         if session.closed or session.source_pointer != source.as_pointer():
             raise VoxelizerError("Sampling session is closed or belongs to another source.")
@@ -3109,6 +3236,8 @@ def _sample_surface_voxels_from_meshes_iter(
             max(vertex.co[axis] for vertex in sampling_mesh.vertices)
             for axis in range(3)
         ))
+    phase_timings["geometry_setup"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     voxel_size = float(settings.voxel_size)
     proven_axes = set(str(axis) for axis in source_symmetry["proven_axes"])
     lattice_indices, lattice_coordinates, lattice_report = _build_sampling_lattice(
@@ -3139,6 +3268,7 @@ def _sample_surface_voxels_from_meshes_iter(
             f"One grid axis would require {max(counts):,} cells; increase "
             f"Voxel Size (limit {work_limit:,})."
         )
+    phase_timings["lattice"] = time.perf_counter() - phase_started
 
     shell_distance = voxel_size * math.sqrt(3.0) * 0.52
     chunk_size = sampling_chunk_size(settings)
@@ -3158,81 +3288,186 @@ def _sample_surface_voxels_from_meshes_iter(
         work_limit * 32,
         work_limit,
     )
+    phase_started = time.perf_counter()
     candidate_expansion_tests = 0
     if use_sparse_candidates:
         sampling_mesh.calc_loop_triangles()
         triangles = tuple(sampling_mesh.loop_triangles)
-        candidate_set: set[tuple[int, int, int]] = set()
+        candidate_set: set[tuple[int, int, int]] | None = set()
+        candidate_mask = None
+        use_dense_candidate_mask = canonical_grid_count <= 8_000_000
+        if use_dense_candidate_mask:
+            try:
+                import numpy as np
+
+                candidate_mask = np.zeros(canonical_grid_count, dtype=np.bool_)
+                candidate_set = None
+            except ImportError:
+                candidate_mask = None
+                candidate_set = set()
         next_yield = chunk_size
-        for triangle_offset, triangle in enumerate(triangles):
-            triangle_coordinates = [
-                sampling_mesh.vertices[index].co
-                for index in triangle.vertices
-            ]
-            lower = []
-            upper = []
+        if candidate_mask is not None:
+            # Dense-mask mode is exact but avoids one Python triangle/AABB
+            # traversal.  Convert loop triangles to float32 arrays in bulk,
+            # derive bounded lattice boxes with vectorized searchsorted, then
+            # rasterize only the small unique span shapes in NumPy chunks.
+            vertex_values = array("f", [0.0]) * (len(sampling_mesh.vertices) * 3)
+            triangle_values = array("i", [0]) * (len(triangles) * 3)
+            sampling_mesh.vertices.foreach_get("co", vertex_values)
+            sampling_mesh.loop_triangles.foreach_get("vertices", triangle_values)
+            vertex_view = np.frombuffer(vertex_values, dtype=np.float32).reshape((-1, 3))
+            triangle_view = np.frombuffer(triangle_values, dtype=np.int32).reshape((-1, 3))
+            triangle_coordinates = vertex_view[triangle_view]
+            minimums = triangle_coordinates.min(axis=1)
+            maximums = triangle_coordinates.max(axis=1)
+            lower_view = np.empty((len(triangles), 3), dtype=np.int32)
+            upper_view = np.empty((len(triangles), 3), dtype=np.int32)
             for axis in range(3):
-                minimum = min(float(point[axis]) for point in triangle_coordinates)
-                maximum = max(float(point[axis]) for point in triangle_coordinates)
-                coordinates = lattice_coordinates[axis]
-                lower.append(bisect_left(coordinates, minimum - shell_distance))
-                upper.append(bisect_right(coordinates, maximum + shell_distance))
-            for axis in range(3):
-                lower[axis] = max(lower[axis], canonical_offset_floors[axis])
-            expansion_count = (
-                (upper[0] - lower[0])
-                * (upper[1] - lower[1])
-                * (upper[2] - lower[2])
-            )
-            candidate_expansion_tests += expansion_count
+                coordinates = np.asarray(lattice_coordinates[axis], dtype=np.float32)
+                lower_view[:, axis] = np.searchsorted(
+                    coordinates,
+                    minimums[:, axis] - shell_distance,
+                    side="left",
+                )
+                upper_view[:, axis] = np.searchsorted(
+                    coordinates,
+                    maximums[:, axis] + shell_distance,
+                    side="right",
+                )
+                lower_view[:, axis] = np.maximum(
+                    lower_view[:, axis],
+                    canonical_offset_floors[axis],
+                ) - canonical_offset_floors[axis]
+                upper_view[:, axis] = np.maximum(
+                    upper_view[:, axis],
+                    canonical_offset_floors[axis],
+                ) - canonical_offset_floors[axis]
+            spans = upper_view - lower_view
+            expansion_counts = np.prod(spans, axis=1, dtype=np.int64)
+            candidate_expansion_tests = int(expansion_counts.sum(dtype=np.int64))
             if candidate_expansion_tests > candidate_expansion_budget:
                 raise VoxelizerError(
                     "Triangle candidate expansion exceeded the configured "
                     f"budget ({candidate_expansion_budget:,}); increase "
                     "Voxel Size or Candidate Expansion Budget."
                 )
-            # itertools.product plus set.update performs the hot insertion loop
-            # in C while preserving the exact expanded-triangle candidate set.
-            candidate_set.update(product(
-                range(lower[0], upper[0]),
-                range(lower[1], upper[1]),
-                range(lower[2], upper[2]),
-            ))
-            if len(candidate_set) > work_limit:
+            unique_spans, span_groups = np.unique(spans, axis=0, return_inverse=True)
+            stride_y = canonical_counts[0]
+            stride_z = canonical_counts[0] * canonical_counts[1]
+            for span_index, span in enumerate(unique_spans):
+                dx, dy, dz = (int(value) for value in span)
+                if dx <= 0 or dy <= 0 or dz <= 0:
+                    continue
+                local_offsets = np.asarray([
+                    z * stride_z + y * stride_y + x
+                    for z, y, x in product(range(dz), range(dy), range(dx))
+                ], dtype=np.int64)
+                starts = lower_view[span_groups == span_index]
+                base_indices = (
+                    starts[:, 2].astype(np.int64) * stride_z
+                    + starts[:, 1].astype(np.int64) * stride_y
+                    + starts[:, 0].astype(np.int64)
+                )
+                base_chunk = max(1, min(chunk_size, 2_000_000 // max(1, len(local_offsets))))
+                for first in range(0, len(base_indices), base_chunk):
+                    indices = (
+                        base_indices[first:first + base_chunk, None]
+                        + local_offsets[None, :]
+                    )
+                    candidate_mask[indices.ravel()] = True
+                yield SamplingProgress(
+                    "CANDIDATES",
+                    span_index + 1,
+                    max(1, len(unique_spans)),
+                    f"Rasterizing sparse candidates for {source.name}",
+                )
+        else:
+            for triangle_offset, triangle in enumerate(triangles):
+                triangle_coordinates = [
+                    sampling_mesh.vertices[index].co
+                    for index in triangle.vertices
+                ]
+                lower = []
+                upper = []
+                for axis in range(3):
+                    minimum = min(float(point[axis]) for point in triangle_coordinates)
+                    maximum = max(float(point[axis]) for point in triangle_coordinates)
+                    coordinates = lattice_coordinates[axis]
+                    lower.append(bisect_left(coordinates, minimum - shell_distance))
+                    upper.append(bisect_right(coordinates, maximum + shell_distance))
+                for axis in range(3):
+                    lower[axis] = max(lower[axis], canonical_offset_floors[axis])
+                expansion_count = (
+                    (upper[0] - lower[0])
+                    * (upper[1] - lower[1])
+                    * (upper[2] - lower[2])
+                )
+                candidate_expansion_tests += expansion_count
+                if candidate_expansion_tests > candidate_expansion_budget:
+                    raise VoxelizerError(
+                        "Triangle candidate expansion exceeded the configured "
+                        f"budget ({candidate_expansion_budget:,}); increase "
+                        "Voxel Size or Candidate Expansion Budget."
+                    )
+                assert candidate_set is not None
+                candidate_set.update(product(
+                    range(lower[0], upper[0]),
+                    range(lower[1], upper[1]),
+                    range(lower[2], upper[2]),
+                ))
+                if len(candidate_set) > work_limit:
+                    raise VoxelizerError(
+                        f"Sparse surface candidates exceeded {work_limit:,}; "
+                        "increase Voxel Size or the Sample Budget."
+                    )
+                if candidate_expansion_tests >= next_yield:
+                    yield SamplingProgress(
+                        "CANDIDATES",
+                        triangle_offset + 1,
+                        max(1, len(triangles)),
+                        f"Building sparse candidates for {source.name}",
+                    )
+                    next_yield = (
+                        (candidate_expansion_tests // chunk_size) + 1
+                    ) * chunk_size
+        if candidate_mask is not None:
+            nonzero = np.flatnonzero(candidate_mask)
+            if len(nonzero) > work_limit:
                 raise VoxelizerError(
                     f"Sparse surface candidates exceeded {work_limit:,}; "
                     "increase Voxel Size or the Sample Budget."
                 )
-            if candidate_expansion_tests >= next_yield:
-                yield SamplingProgress(
-                    "CANDIDATES",
-                    triangle_offset + 1,
-                    max(1, len(triangles)),
-                    f"Building sparse candidates for {source.name}",
-                )
-                next_yield = (
-                    (candidate_expansion_tests // chunk_size) + 1
-                ) * chunk_size
-        candidate_offsets = sorted(
-            candidate_set,
-            key=lambda key: (key[2], key[1], key[0]),
-        )
+            z_offsets, remainder = np.divmod(
+                nonzero,
+                canonical_counts[0] * canonical_counts[1],
+            )
+            y_offsets, x_offsets = np.divmod(remainder, canonical_counts[0])
+            candidate_offsets = list(zip(
+                (x_offsets + canonical_offset_floors[0]).tolist(),
+                (y_offsets + canonical_offset_floors[1]).tolist(),
+                (z_offsets + canonical_offset_floors[2]).tolist(),
+            ))
+        else:
+            assert candidate_set is not None
+            candidate_offsets = sorted(
+                candidate_set,
+                key=lambda key: (key[2], key[1], key[0]),
+            )
     else:
         if canonical_grid_count > work_limit:
             raise VoxelizerError(
                 f"Grid would require {canonical_grid_count:,} canonical samples; increase "
                 f"Voxel Size (limit {work_limit:,})."
             )
-        candidate_offsets = [
-            (x_offset, y_offset, z_offset)
-            for z_offset in range(canonical_offset_floors[2], counts[2])
-            for y_offset in range(canonical_offset_floors[1], counts[1])
-            for x_offset in range(canonical_offset_floors[0], counts[0])
-        ]
+        candidate_offsets = _CanonicalGridOffsets(
+            canonical_offset_floors,
+            counts,
+        )
         candidate_expansion_tests = len(candidate_offsets)
     candidate_count = len(candidate_offsets)
     if not candidate_offsets:
         raise VoxelizerError("No sampling candidates were produced.")
+    phase_timings["candidates"] = time.perf_counter() - phase_started
     yield SamplingProgress(
         "CANDIDATES",
         candidate_count,
@@ -3276,16 +3511,81 @@ def _sample_surface_voxels_from_meshes_iter(
     orbit_added_count = 0
     adaptive_rejected_seed_count = 0
     maximum_voxels = voxel_budget(settings)
+    phase_started = time.perf_counter()
+    occupancy_prefilter = None
+    occupancy_diagnostics: dict[str, object] = {
+        "used": False,
+        "mode": "CPU_BVH",
+        "reason": (
+            "Adaptive sampling uses the CPU occupancy path"
+            if adaptive_enabled
+            else "CPU backend selected"
+            if requested_backend.upper() == "CPU"
+            else "Auto kept small occupancy work on CPU"
+        ),
+    }
+    occupancy_gpu_requested = (
+        requested_backend.upper() == "GPU"
+        or (
+            requested_backend.upper() == "AUTO"
+            and candidate_count >= 50_000
+        )
+    )
+    if not adaptive_enabled and occupancy_gpu_requested:
+        occupancy_index_key = (
+            round(voxel_size, 12),
+            tuple(counts),
+            tuple(round(float(axis[0]), 12) for axis in lattice_coordinates),
+            round(shell_distance, 12),
+        )
+        cached_occupancy_index = (
+            session.occupancy_index_cache.get(occupancy_index_key)
+            if session is not None
+            else None
+        )
+        occupancy_prefilter, occupancy_decision, occupancy_diagnostics, resource, index_resource = (
+            gpu_backend.sample_uniform_occupancy(
+                sampling_mesh,
+                candidate_offsets,
+                lattice_coordinates,
+                shell_distance,
+                requested=requested_backend,
+                batch_size=gpu_batch_size,
+                memory_limit_mb=gpu_memory_limit_mb,
+                resource=(session.gpu_occupancy_resource if session is not None else None),
+                index_resource=cached_occupancy_index,
+            )
+        )
+        if session is not None:
+            session.gpu_occupancy_resource = resource
+            if index_resource is not None:
+                session.occupancy_index_cache[occupancy_index_key] = index_resource
+                session.occupancy_index_cache.move_to_end(occupancy_index_key)
+                while len(session.occupancy_index_cache) > 2:
+                    session.occupancy_index_cache.popitem(last=False)
+        if occupancy_decision.used != "GPU":
+            occupancy_prefilter = None
+    bvh_query_count = 0
     if not proven_axes:
         for candidate_number, (x_offset, y_offset, z_offset) in enumerate(
             candidate_offsets,
             start=1,
         ):
+            if occupancy_prefilter is not None and not occupancy_prefilter[candidate_number - 1]:
+                if candidate_number % chunk_size == 0:
+                    yield SamplingProgress(
+                        "OCCUPANCY",
+                        candidate_number,
+                        candidate_count,
+                        f"GPU-prefiltering {source.name}",
+                    )
+                continue
             centre = Vector((
                 lattice_coordinates[0][x_offset],
                 lattice_coordinates[1][y_offset],
                 lattice_coordinates[2][z_offset],
             ))
+            bvh_query_count += 1
             nearest = bvh.find_nearest(centre, shell_distance)
             if nearest is not None and nearest[0] is not None and nearest[3] is not None:
                 location, _normal, _polygon_index, distance = nearest
@@ -3333,11 +3633,21 @@ def _sample_surface_voxels_from_meshes_iter(
             candidate_offsets,
             start=1,
         ):
+            if occupancy_prefilter is not None and not occupancy_prefilter[candidate_number - 1]:
+                if candidate_number % chunk_size == 0:
+                    yield SamplingProgress(
+                        "OCCUPANCY",
+                        candidate_number,
+                        candidate_count,
+                        f"GPU-prefiltering symmetric occupancy for {source.name}",
+                    )
+                continue
             centre = Vector((
                 lattice_coordinates[0][x_offset],
                 lattice_coordinates[1][y_offset],
                 lattice_coordinates[2][z_offset],
             ))
+            bvh_query_count += 1
             nearest = bvh.find_nearest(centre, shell_distance)
             if nearest is not None and nearest[0] is not None and nearest[3] is not None:
                 if nearest[3] <= shell_distance:
@@ -3427,6 +3737,8 @@ def _sample_surface_voxels_from_meshes_iter(
             )
             colours = [analysis.colour for analysis in analyses]
         orbit_added_count = max(0, len(centres) - occupied_seed_count)
+    phase_timings["occupancy"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     if not centres:
         raise VoxelizerError("No surface voxels were produced; decrease Voxel Size.")
     if occupancy_only:
@@ -3471,6 +3783,8 @@ def _sample_surface_voxels_from_meshes_iter(
             source_symmetry=source_symmetry,
             cells=cells,
         )
+    phase_timings["colour_and_adaptive"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     centres = [cell.centre for cell in cells]
     colours = [cell.colour for cell in cells]
     sizes = [cell.size for cell in cells]
@@ -3506,6 +3820,9 @@ def _sample_surface_voxels_from_meshes_iter(
         ),
         "chunk_size": chunk_size,
         "compute_backend": backend_diagnostics,
+        "occupancy_backend": occupancy_diagnostics,
+        "occupancy_auto_threshold": 50_000,
+        "bvh_query_count": bvh_query_count,
         "cache_hit": False,
         "source_session_reused": session is not None,
         "source_session_timings": dict(session.timings) if session is not None else {},
@@ -3526,6 +3843,9 @@ def _sample_surface_voxels_from_meshes_iter(
             else "LEGACY_NO_CLOSURE"
         ),
     }
+    phase_timings["finalize"] = time.perf_counter() - phase_started
+    phase_timings["total"] = time.perf_counter() - phase_started_total
+    diagnostics["phase_timings"] = phase_timings
     _LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()] = diagnostics
     yield SamplingProgress(
         "FINALIZE",
@@ -3557,6 +3877,7 @@ def sample_surface_voxels_iter(
     use_cache: bool = True,
     session: Optional[SourceSamplingSession] = None,
     occupancy_only: bool = False,
+    use_session_cache: bool = False,
 ) -> Iterator[SamplingProgress]:
     """Incrementally sample one source and return the result on completion.
 
@@ -3617,6 +3938,16 @@ def sample_surface_voxels_iter(
                 source_uvs=source_uvs,
             )
 
+    session_cache_hit = False
+    session_prepare_seconds = 0.0
+    if session is None and use_session_cache:
+        session_started = time.perf_counter()
+        session, session_cache_hit = acquire_sampling_session(
+            context,
+            source,
+            settings,
+        )
+        session_prepare_seconds = time.perf_counter() - session_started
     if session is not None:
         result = yield from _sample_surface_voxels_from_meshes_iter(
             context,
@@ -3681,6 +4012,8 @@ def sample_surface_voxels_iter(
         )
     diagnostics = dict(_LAST_SAMPLING_DIAGNOSTICS[source.as_pointer()])
     diagnostics["cache_hit"] = False
+    diagnostics["source_session_cache_hit"] = bool(session_cache_hit)
+    diagnostics["source_session_acquire_seconds"] = session_prepare_seconds
     if use_cache:
         _cache_put(
             cache_id,
@@ -3720,6 +4053,7 @@ def sample_surface_voxels(
     progress_callback=None,
     session: Optional[SourceSamplingSession] = None,
     occupancy_only: bool = False,
+    use_session_cache: bool = False,
 ) -> VoxelSampleResult:
     """Synchronous sampling API used by scripts and background tests."""
 
@@ -3732,6 +4066,7 @@ def sample_surface_voxels(
             use_cache=use_cache,
             session=session,
             occupancy_only=occupancy_only,
+            use_session_cache=use_session_cache,
         ),
         progress_callback,
     )
@@ -3845,7 +4180,11 @@ def build_voxel_mesh_iter(
     """Incrementally build the realized cube mesh used by Bake."""
 
     sample_result = yield from sample_surface_voxels_iter(
-        context, source, settings, cache_key=cache_key
+        context,
+        source,
+        settings,
+        cache_key=cache_key,
+        use_session_cache=True,
     )
     if not isinstance(sample_result, VoxelSampleResult):
         centres, colours, _count, used_image = sample_result

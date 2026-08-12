@@ -222,6 +222,7 @@ def initialize_carrier(
     output: bpy.types.Object,
     *,
     reset_delta: bool = False,
+    coordinate_ordered: bool = False,
 ) -> int:
     """Add durable editable attributes to an existing Preview carrier."""
 
@@ -255,13 +256,21 @@ def initialize_carrier(
         coordinate_for_center(vertex.co, origin, grid_size)
         for vertex in mesh.vertices
     ]
-    sorted_indices = sorted(range(point_count), key=lambda index: coordinates[index])
-    generated_ids = {index: order + 1 for order, index in enumerate(sorted_indices)}
+    if coordinate_ordered:
+        # Core sampling emits z/y/x lattice order.  New carriers can therefore
+        # assign the same stable 1-based IDs without an O(N log N) sort.  Old
+        # or externally edited carriers keep the conservative sorting path.
+        generated_ids = None
+    else:
+        sorted_indices = sorted(range(point_count), key=lambda index: coordinates[index])
+        generated_ids = {index: order + 1 for order, index in enumerate(sorted_indices)}
     id_values = array(
         "i",
         (
             int(existing_ids[index])
             if int(existing_ids[index]) > 0
+            else index + 1
+            if generated_ids is None
             else generated_ids[index]
             for index in range(point_count)
         ),

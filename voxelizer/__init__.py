@@ -23,7 +23,7 @@ from . import core, editable, editor, gpu_backend, i18n, live, meshing, preview,
 bl_info = {
     "name": "Chromoxel",
     "author": "Moore \"Zz11uKS\" Ji",
-    "version": (0, 8, 2),
+    "version": (0, 9, 0),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Voxelizer",
     "description": "Build adaptive, texture-aware, symmetry-safe voxel shells",
@@ -511,6 +511,21 @@ class VOXELIZER_PG_settings(PropertyGroup):
         default="",
         options={"HIDDEN", "SKIP_SAVE"},
     )
+    performance_summary: StringProperty(
+        name="Last Performance Summary",
+        default="No voxelization profile yet",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    performance_detail: StringProperty(
+        name="Last Performance Detail",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    performance_backend: StringProperty(
+        name="Last Compute Backend",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
 
 
 class VOXELIZER_OT_quality_preset(Operator):
@@ -664,6 +679,34 @@ class _VOXELIZER_OT_modal_job:
     _batch_total = 1
     _completed_items = 0
 
+    @staticmethod
+    def _capture_performance(settings, source) -> None:
+        diagnostics = core.sampling_diagnostics(source)
+        timings = diagnostics.get("phase_timings", {})
+        source_timings = diagnostics.get("source_session_timings", {})
+        acquire = float(diagnostics.get("source_session_acquire_seconds", 0.0) or 0.0)
+        sample_total = float(timings.get("total", 0.0) or 0.0)
+        source_total = 0.0 if diagnostics.get("source_session_cache_hit") else float(
+            source_timings.get("total", acquire) or acquire
+        )
+        occupancy = diagnostics.get("occupancy_backend", {})
+        mode = str(occupancy.get("mode", "CPU_BVH"))
+        if occupancy.get("used"):
+            mode = "GPU + exact CPU"
+        elif str(diagnostics.get("compute_backend", {}).get("used", "CPU")) == "GPU":
+            mode = "GPU colour + CPU occupancy"
+        settings.performance_backend = mode
+        settings.performance_summary = (
+            f"Source {source_total:.2f}s | Sample {sample_total:.2f}s | "
+            f"{int(diagnostics.get('selected_count', 0)):,} voxels"
+        )
+        settings.performance_detail = (
+            f"Candidates {float(timings.get('candidates', 0.0)):.2f}s | "
+            f"Occupancy {float(timings.get('occupancy', 0.0)):.2f}s | "
+            f"Colour {float(timings.get('colour_and_adaptive', 0.0)):.2f}s | "
+            f"BVH {int(diagnostics.get('bvh_query_count', 0)):,}"
+        )
+
     @classmethod
     def poll(cls, context):
         settings = getattr(context.scene, "voxelizer_settings", None)
@@ -800,6 +843,7 @@ class VOXELIZER_OT_preview(_VOXELIZER_OT_modal_job, Operator):
                 force_rebuild=False,
             )
             update.output.hide_render = False
+            self._capture_performance(settings, source)
             total_points += update.point_count
             last_update = update
             self._completed_items += 1
@@ -941,6 +985,7 @@ class VOXELIZER_OT_bake(_VOXELIZER_OT_modal_job, Operator):
                 bpy.data.meshes.remove(mesh)
                 raise
             output.hide_render = False
+            self._capture_performance(settings, source)
             removed = int(mesh.get(meshing.ENCLOSED_REMOVED_TAG, 0))
             skip_reason = str(mesh.get(meshing.ENCLOSED_SKIP_TAG, ""))
             output["chromoxel_remove_enclosed_voxels"] = bool(
@@ -1322,6 +1367,21 @@ class VOXELIZER_PT_panel(Panel):
             row.operator(VOXELIZER_OT_clear_cache.bl_idname, icon="X")
             stats = core.sampling_cache_stats()
             row.label(text=f"{stats['entries']} | {stats['bytes'] / (1024 * 1024):.1f} MiB")
+            advanced_box.label(
+                text=f"Prepared sources: {stats['session_entries']}",
+                icon="MESH_DATA",
+            )
+
+            profile_box = advanced_box.box()
+            profile_box.label(
+                text=editor.translated(context, "Last voxelization", "上次体素化"),
+                icon="TIME",
+            )
+            profile_box.label(text=settings.performance_summary)
+            if settings.performance_detail:
+                profile_box.label(text=settings.performance_detail)
+            if settings.performance_backend:
+                profile_box.label(text=f"Backend: {settings.performance_backend}")
 
         if settings.task_running:
             task_box = layout.box()

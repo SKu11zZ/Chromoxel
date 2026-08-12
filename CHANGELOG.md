@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.0 - 2026-08-12
+
+- Added real GPU Uniform occupancy prefiltering in normal interactive Blender
+  sessions. A coarse triangle-brick index and conservative triangle-AABB
+  shader reject empty candidates in bounded batches; Blender's CPU BVH still
+  confirms every positive, preserving exact CPU voxel coordinates.
+- Added reusable interactive Source Sessions across Preview and direct Bake.
+  Evaluated source/sampling snapshots, symmetry proof, BVHs, texture state,
+  uploaded triangles, and up to two resolution indexes stay warm until the
+  source changes or the user clears the cache.
+- Added stage-level diagnostics for source preparation, lattice, candidates,
+  occupancy, colour/adaptive work, carrier creation, Bake, export, save, BVH
+  query counts, GPU fallback reasons, and memory/index usage. The Blender
+  Advanced panel and CLI JSON report expose these measurements.
+- Replaced large sparse-candidate Python expansion with exact NumPy
+  chunked-mask rasterization when the canonical lattice is bounded. Full-grid
+  candidates also use a lazy, sliceable sequence instead of materializing all
+  Python coordinate tuples.
+- Added a no-sort fast path for newly sampled editable carriers while keeping
+  stable deterministic IDs and the conservative path for existing/external
+  carriers.
+- Kept the 512 MiB default GPU ceiling, bounded 65,536-candidate dispatches,
+  automatic CPU fallback, passive N-panel, 100,000-point per-model ceiling,
+  and exact symmetry behavior.
+- Validated CPU/GPU coordinate equality for both 1.47-1.49-million-face Tripo
+  sources at roughly 2K, 20K, and 97K voxels. Warm 97K samples measured 3.75 s
+  and 5.46 s; cold samples measured 3.97 s and 6.25 s after source preparation.
+
 ## 0.8.2 - 2026-08-12
 
 - Added an opt-in **Remove Enclosed Voxels** Bake setting and matching

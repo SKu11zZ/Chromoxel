@@ -1,4 +1,4 @@
-"""Blender command-line workflow for Chromoxel 0.8.
+"""Blender command-line workflow for Chromoxel 0.9.
 
 Invoke through Blender, not the system Python interpreter.  The public wrapper
 is ``tools/chromoxel_cli.py``; arguments after Blender's ``--`` are parsed here.
@@ -358,7 +358,11 @@ def create_editable_output(
     )
     output[editable.GRID_SIZE_TAG] = min(sample.sizes or [voxel_size])
     output[editable.GRID_ORIGIN_TAG] = (0.0, 0.0, 0.0)
-    editable.initialize_carrier(output, reset_delta=True)
+    editable.initialize_carrier(
+        output,
+        reset_delta=True,
+        coordinate_ordered=True,
+    )
     uv_attribute = output.data.attributes.get(editable.SOURCE_UV_ATTRIBUTE)
     if uv_attribute is not None and sample.source_uvs:
         uv_attribute.data.foreach_set(
@@ -461,7 +465,12 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
 
     args = build_parser().parse_args(list(arguments))
     register()
+    run_started = time.perf_counter()
+    phase_timings: dict[str, float] = {}
+    phase_started = time.perf_counter()
     imported = import_input(args.input)
+    phase_timings["import"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     if args.source_object:
         source = bpy.data.objects.get(args.source_object)
         if source is None or source.type != "MESH":
@@ -470,6 +479,8 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
         source = imported[0]
     else:
         source = join_evaluated_meshes(imported, normalize_height=args.normalize_height)
+    phase_timings["source_join"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     if editable.is_editable(source):
         output = source
         sample_count = len(source.data.vertices)
@@ -507,6 +518,8 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
             sample = core.sample_surface_voxels(bpy.context, source, settings, use_cache=True)
             attempts = []
         sample_count = sample.count
+        phase_timings["sample"] = time.perf_counter() - phase_started
+        phase_started = time.perf_counter()
         output = create_editable_output(
             bpy.context,
             source,
@@ -514,19 +527,30 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
             voxel_size,
             name="Chromoxel_CLI_Editable",
         )
+    if "sample" not in phase_timings:
+        phase_timings["sample"] = 0.0
+    phase_timings["editable_carrier"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     final_output = bake_output(
         output,
         args.bake_mode,
         "Chromoxel_CLI_Output",
         remove_enclosed=args.remove_enclosed_voxels,
     )
+    phase_timings["bake"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     _select_only(final_output)
     if args.export_vox:
         vox_io.export_vox(output, str(Path(args.export_vox).resolve()))
+    phase_timings["export_vox"] = time.perf_counter() - phase_started
+    phase_started = time.perf_counter()
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_path), compress=True)
+    phase_timings["save"] = time.perf_counter() - phase_started
+    phase_timings["total"] = time.perf_counter() - run_started
     filter_mesh = final_output.data
+    sampling_report = core.sampling_diagnostics(source)
     report = {
         "status": "PASS",
         "blender": bpy.app.version_string,
@@ -556,7 +580,12 @@ def run(arguments: Sequence[str]) -> dict[str, object]:
         "attempts": attempts,
         "compute_backend_requested": args.compute_backend.upper(),
         "gpu_memory_limit_mb": args.gpu_memory_limit_mb,
-        "compute_backend": core.sampling_diagnostics(source).get("compute_backend", {}),
+        "compute_backend": sampling_report.get("compute_backend", {}),
+        "occupancy_backend": sampling_report.get("occupancy_backend", {}),
+        "sampling_phase_timings": sampling_report.get("phase_timings", {}),
+        "source_session_timings": sampling_report.get("source_session_timings", {}),
+        "bvh_query_count": sampling_report.get("bvh_query_count", 0),
+        "timings": phase_timings,
     }
     if args.report:
         report_path = Path(args.report).resolve()

@@ -4,7 +4,7 @@
 
 **面向 Blender 的自适应、纹理感知、对称安全体素化工具。**
 
-**Version / 版本：** 0.8.2 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
+**Version / 版本：** 0.9.0 · **Status / 状态：** Beta · **Target / 目标版本：** Blender 5.1+
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -95,6 +95,34 @@ Chromoxel converts selected meshes into coloured surface-voxel shells. Its
 Geometry Nodes point Preview is now a durable editable voxel model, with four
 Bake targets and MagicaVoxel `.vox` interchange.
 
+### What is new in 0.9.0
+
+- **Real GPU Uniform occupancy.** In an interactive Blender window, Auto/GPU
+  can reject empty lattice candidates with a bounded compute shader. A
+  conservative triangle-AABB lower bound feeds exact CPU BVH confirmation, so
+  GPU and CPU keep identical voxel coordinates. Headless or unsupported
+  systems fall back automatically.
+- **Large-source sessions stay warm.** Preview and direct Bake reuse evaluated
+  source/sampling snapshots, symmetry proof, BVHs, texture state, GPU triangle
+  upload, and up to two resolution indexes. Changing only Voxel Size no longer
+  repeats million-face source preparation; **Clear Sampling Cache** releases
+  all prepared CPU/GPU resources.
+- **Bounded large-mesh generation.** Sparse candidates use exact NumPy
+  chunked-mask rasterization on bounded grids, while full-grid work uses a
+  lazy sliceable sequence. GPU dispatch stays capped by **GPU Batch Size** and
+  the default **512 MiB** memory ceiling.
+- **Visible performance diagnostics.** Expand **Advanced > Last voxelization**
+  to see source, candidates, occupancy, colour, voxel count, BVH queries, and
+  backend. CLI JSON now adds `timings`, `sampling_phase_timings`,
+  `source_session_timings`, `occupancy_backend`, and `bvh_query_count`.
+
+On the validated Blender 5.1.2 workstation, two supplied 1.47-1.49-million-
+face Tripo sources produced exact CPU/GPU coordinate matches at roughly 2K,
+20K, and 97K voxels. The 97K sampling pass measured 3.97/6.25 seconds cold and
+3.75/5.46 seconds warm, after one 6.44/10.44-second source preparation. These
+numbers are hardware- and asset-dependent; texture loading, import, carrier
+creation, mesh Bake, and saving are reported separately.
+
 ### What is new in 0.8.2
 
 - Added an opt-in **Remove Enclosed Voxels** Bake option. It removes only cells
@@ -150,9 +178,9 @@ Measured sampling time for one character across approximately 2K, 20K, and
 | CH15 | 428.42 s | 10.24 s | 9.98 s |
 | CH46 | 344.31 s | 8.52 s | 7.65 s |
 
-The GPU currently accelerates batched texture reads. Occupancy generation,
-BVH nearest-surface queries, UV mapping, and adaptive error analysis remain on
-the CPU, so total GPU gain depends on how texture-heavy the source is.
+In 0.8, the GPU accelerated batched texture reads only. Version 0.9 adds the
+Uniform occupancy prefilter described above; exact confirmation and the
+remaining geometry work still run on the CPU.
 
 ### What is new in 0.7
 
@@ -218,14 +246,14 @@ the CPU, so total GPU gain depends on how texture-heavy the source is.
 
 #### Blender extension package (recommended)
 
-1. Download `chromoxel-blender-0.8.2-extension.zip` from [`dist`](dist) or the
+1. Download `chromoxel-blender-0.9.0-extension.zip` from [`dist`](dist) or the
    latest GitHub Release.
 2. In Blender 5.1, open **Edit > Preferences > Add-ons**.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable **Chromoxel**.
 5. In the 3D Viewport, press `N` and open the **Voxelizer** tab.
 
-Use `chromoxel-blender-0.8.2.zip` only when a legacy add-on installer expects a
+Use `chromoxel-blender-0.9.0.zip` only when a legacy add-on installer expects a
 top-level `voxelizer` directory inside the archive.
 
 ### Quick start
@@ -338,13 +366,16 @@ geometric asymmetry.
 
 ### Current limits
 
-- GPU acceleration currently covers Uniform-mode texture reads; occupancy,
-  BVH/UV mapping, Adaptive analysis, and mesh construction remain CPU work.
+- In an interactive Blender graphics context, GPU acceleration covers the
+  Uniform occupancy prefilter and texture reads. Exact positive confirmation,
+  source preparation, BVH/UV mapping, Adaptive analysis, and mesh construction
+  remain CPU work.
 - Surface shell only; the interior is not filled as a solid volume.
 - Automatic material discovery supports UV-driven images upstream of a
   Principled Base Color input. The manual Image Override remains available.
-- Procedural shader baking, UDIM tile sampling, alpha-cutout occupancy, sparse
-  bricks, clipmaps, and camera-dependent LOD are not implemented yet.
+- Procedural shader baking, UDIM tile sampling, alpha-cutout occupancy,
+  persistent voxel volumes, clipmaps, and camera-dependent LOD are not
+  implemented yet.
 - One editable model supports up to 100,000 points. Spatial chunk metadata is
   retained for large-model processing; split larger assets before authoring at
   minimum voxel size.
@@ -370,8 +401,12 @@ blender --background --factory-startup --python tests/blender_v070_scale_interch
 blender --background --factory-startup --python tests/blender_v080_performance.py
 blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
+blender --background --factory-startup --python tests/blender_v090_session_profile.py
 # GPU parity needs a normal Blender window / graphics context:
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
+blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
+blender --factory-startup --python tests/interactive_v090_tripo_gpu.py -- `
+  --input-a path/to/model_a.glb --input-b path/to/model_b.glb
 ```
 
 See [VALIDATION.md](VALIDATION.md) for the verified Blender version and release
@@ -391,6 +426,26 @@ Maintainer: **Moore "Zz11uKS" Ji** (`SKu11zZ`).
 
 Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体素壳。Geometry Nodes 点预览
 现在也是持久的可编辑体素模型，并支持四类 Bake 输出和 MagicaVoxel `.vox` 互换。
+
+### 0.9.0 新功能
+
+- **真正的 Uniform GPU 占据加速。** 在普通交互式 Blender 窗口中，Auto/GPU 会用受显存和批次
+  限制的计算着色器剔除空网格候选。GPU 使用保守的三角形 AABB 距离下界，所有阳性候选仍由
+  CPU BVH 精确确认，因此 GPU 与 CPU 的体素坐标完全一致；后台或不支持的环境会自动回退。
+- **大模型 Source Session 热复用。** Preview 与直接 Bake 会复用求值网格、修复代理、对称证明、
+  BVH、纹理状态、GPU 三角形上传以及最多两个体素分辨率索引。仅修改 Voxel Size 时不再重复扫描
+  百万面源模型；点击 **Clear Sampling Cache** 会释放全部已准备的 CPU/GPU 资源。
+- **有界的大模型候选生成。** 在有界网格上使用精确的 NumPy 分块位图生成稀疏候选；完整网格使用
+  惰性、可切片序列，不再一次性创建海量 Python 坐标。GPU 仍受 **GPU Batch Size** 与默认
+  **512 MiB** 显存上限约束。
+- **可见的阶段性能诊断。** 展开 **Advanced > Last voxelization** 可查看源准备、候选、占据、
+  颜色、体素数量、BVH 查询数和实际后端。CLI JSON 新增 `timings`、
+  `sampling_phase_timings`、`source_session_timings`、`occupancy_backend` 与
+  `bvh_query_count`。
+
+在 Blender 5.1.2 验收工作站上，两个约 147–149 万面的 Tripo 模型在约 2K、20K 和 97K 档均与
+CPU 逐坐标一致。97K 采样冷运行分别为 3.97/6.25 秒，热运行分别为 3.75/5.46 秒；首次源准备为
+6.44/10.44 秒。具体耗时受硬件与素材影响，导入、纹理、载体、Mesh Bake 和保存会分别计时。
 
 ### 0.8.2 新功能
 
@@ -433,8 +488,8 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 | CH15 | 428.42 秒 | 10.24 秒 | 9.98 秒 |
 | CH46 | 344.31 秒 | 8.52 秒 | 7.65 秒 |
 
-当前 GPU 主要加速批量纹理读取；占用生成、BVH 最近点、UV 映射和自适应误差分析仍在 CPU，
-因此总加速幅度会随素材的纹理工作量变化。
+0.8 版本的 GPU 只加速批量纹理读取；0.9 已新增上文所述的 Uniform 占据预筛，精确确认和
+其余几何工作仍由 CPU 完成。
 
 ### 0.7 新功能
 
@@ -482,14 +537,14 @@ Chromoxel（纹彩体素）可将选中的模型转换为带颜色的表面体�
 #### Blender 扩展安装包（推荐）
 
 1. 从 [`dist`](dist) 或最新 GitHub Release 下载
-   `chromoxel-blender-0.8.2-extension.zip`。
+   `chromoxel-blender-0.9.0-extension.zip`。
 2. 在 Blender 5.1 中打开 **Edit > Preferences > Add-ons**。
 3. 选择 **Install from Disk** 并选择 ZIP。
 4. 启用 **Chromoxel**。
 5. 回到 3D 视图，按 `N` 打开侧栏并进入 **Voxelizer** 标签页。
 
 只有传统安装器要求 ZIP 内含顶层 `voxelizer` 文件夹时，才使用
-`chromoxel-blender-0.8.2.zip`。
+`chromoxel-blender-0.9.0.zip`。
 
 ### 快速开始
 
@@ -584,10 +639,12 @@ Chromoxel 根据顶点对应关系及镜像后的边/多边形拓扑，分别证
 
 ### 当前限制
 
-- GPU 当前加速 Uniform 模式的纹理读取；占用、BVH/UV 映射、自适应分析和网格构建仍由 CPU 完成。
+- 在交互式 Blender 图形上下文中，GPU 可加速 Uniform 占据预筛和纹理读取；精确阳性确认、
+  源准备、BVH/UV 映射、自适应分析和网格构建仍由 CPU 完成。
 - 只生成表面体素壳，不填充内部体积。
 - 自动材质识别支持连接到 Principled Base Color 上游、使用 UV 的图片节点；仍可手动覆盖图片。
-- 尚未实现程序化 Shader 自动烘焙、UDIM、基于 Alpha 的占用、稀疏 Brick、Clipmap 和相机相关 LOD。
+- 尚未实现程序化 Shader 自动烘焙、UDIM、基于 Alpha 的占用、持久体素体积、Clipmap 和
+  相机相关 LOD。
 - 单个可编辑模型最高支持 100,000 点。空间分块元数据会被保留；超大资产需要在使用最小体素
   尺寸创作前拆分为多个模型。
 
@@ -612,8 +669,12 @@ blender --background --factory-startup --python tests/blender_v070_scale_interch
 blender --background --factory-startup --python tests/blender_v080_performance.py
 blender --background --factory-startup --python tests/blender_v081_panel_cli.py
 blender --background --factory-startup --python tests/blender_v082_enclosed.py
-# GPU 颜色一致性测试需要普通 Blender 窗口 / 图形上下文：
+blender --background --factory-startup --python tests/blender_v090_session_profile.py
+# GPU 一致性测试需要普通 Blender 窗口 / 图形上下文：
 blender --factory-startup --python tests/blender_v080_gpu_compute.py
+blender --factory-startup --python tests/interactive_v090_gpu_occupancy.py
+blender --factory-startup --python tests/interactive_v090_tripo_gpu.py -- `
+  --input-a path/to/model_a.glb --input-b path/to/model_b.glb
 ```
 
 已验证的 Blender 版本和发布检查见 [VALIDATION.md](VALIDATION.md)。

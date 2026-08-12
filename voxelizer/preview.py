@@ -473,6 +473,7 @@ def refresh_preview_iter(
         source,
         settings,
         cache_key=cache_key,
+        use_session_cache=True,
     )
     if isinstance(sample_result, core.VoxelSampleResult):
         centres = sample_result.centres
@@ -526,7 +527,11 @@ def refresh_preview_iter(
         if was_editable:
             output[editable.GRID_SIZE_TAG] = preserved_grid_size
             output[editable.GRID_ORIGIN_TAG] = preserved_grid_origin
-        editable.initialize_carrier(output, reset_delta=not was_editable)
+        editable.initialize_carrier(
+            output,
+            reset_delta=not was_editable,
+            coordinate_ordered=not was_editable,
+        )
         source_uv_attribute = output.data.attributes.get(editable.SOURCE_UV_ATTRIBUTE)
         if source_uv_attribute is not None:
             source_uv_attribute.data.foreach_set(
